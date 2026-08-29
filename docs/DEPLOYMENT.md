@@ -35,11 +35,14 @@ GitHub 저장소는 공개 상태이며 Vercel GitHub 앱과 연결되어 있습
 ```bash
 pnpm install --frozen-lockfile
 pnpm build
+# work_dir에 이번 작업 기록 작성 및 INDEX 갱신
 git status
 git add <changed-files>
 git commit -m "<type>: <summary>"
 git push origin main
 ```
+
+모든 기능·수정·문서 커밋에는 `work_dir/WORK_LOG_GUIDE.md` 형식의 작업 기록을 포함합니다. 커밋 SHA는 커밋 생성 전 확정할 수 없으므로 기록 파일의 Git 이력으로 해당 커밋을 찾고, 이미 완료된 과거 커밋을 정리할 때만 SHA를 직접 기입합니다.
 
 push 이후 Vercel이 자동으로 다음 작업을 수행합니다.
 
