@@ -4,6 +4,8 @@
 
 프로젝트 데이터는 서버로 전송하지 않고 브라우저의 IndexedDB에 저장합니다. 완성 결과는 2D PNG와 현재 카메라 시점의 3D PNG로 내려받을 수 있습니다.
 
+**배포 주소:** [https://apartment-floorplanner.vercel.app](https://apartment-floorplanner.vercel.app)
+
 ## 주요 기능
 
 - JPG/PNG 평면도 업로드 및 예시 도면 제공
