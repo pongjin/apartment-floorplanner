@@ -100,7 +100,7 @@ src/
 └── types/project.ts          # 핵심 데이터 모델
 ```
 
-구현 현황, 중요한 설계 결정과 다음 작업은 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)를 참고하세요. 최초 제품 기획은 [apartment-floorplanner-mvp-plan.md](apartment-floorplanner-mvp-plan.md)에 보존되어 있습니다.
+구현 현황, 중요한 설계 결정과 다음 작업은 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)를 참고하세요. GitHub·Vercel 운영과 재배포 절차는 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)에 정리되어 있습니다. 최초 제품 기획은 [apartment-floorplanner-mvp-plan.md](apartment-floorplanner-mvp-plan.md)에 보존되어 있습니다.
 
 ## 알려진 제약
 
