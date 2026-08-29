@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileImage, Home, Info, RotateCcw, Ruler, ScanLine, Sparkles, Trash2, Undo2, Upload } from 'lucide-react'
+import { CheckCircle2, FileImage, Home, Info, RotateCcw, Ruler, ScanLine, Sparkles, Trash2, Undo2, Upload, XCircle } from 'lucide-react'
 import { FloorPlanStage } from './components/FloorPlanStage'
 import { FurnitureLibrary } from './components/FurnitureLibrary'
 import { Preview3D } from './components/Preview3D'
 import { StepBar } from './components/StepBar'
 import { distance } from './lib/geometry'
 import { detectFloorPlan } from './lib/floorPlanDetection'
-import { fileToFloorPlan, urlToFloorPlan } from './hooks/useImageUpload'
+import { fileToFloorPlan, inspectFloorPlanQuality, urlToFloorPlan, type FloorPlanQuality } from './hooks/useImageUpload'
 import { useProjectStore } from './store/projectStore'
 import type { PointPx, ScaleCalibration } from './types/project'
 
@@ -15,7 +15,7 @@ const guidance = {
   scale: { eyebrow: 'STEP 2', title: '도면의 기준 길이를 알려주세요', body: '실제 길이를 아는 선의 양 끝을 도면에서 차례로 눌러주세요.' },
   walls: { eyebrow: 'STEP 3', title: '도면 구조를 확인해 주세요', body: '수정과 생성을 전환하고, 두 점으로 벽·문·창을 추가하세요.' },
   furniture: { eyebrow: 'STEP 4', title: '가구를 배치해 보세요', body: '프리셋을 누르거나 내 가구를 만들고, 도면에서 끌어 배치하세요.' },
-  preview3d: { eyebrow: 'STEP 5', title: '3D로 공간을 확인하세요', body: '드래그해서 회전하고, 휠로 확대하거나 두 손가락으로 이동하세요.' },
+  preview3d: { eyebrow: 'STEP 5', title: '3D로 공간을 확인하세요', body: '모바일은 한 손가락으로 이동하고, 버튼을 눌러 회전 모드로 바꿀 수 있어요.' },
   export: { eyebrow: 'STEP 6', title: '완성 이미지를 저장하세요', body: '2D 도면과 현재 보고 있는 3D 시점을 각각 PNG로 저장할 수 있어요.' },
 } as const
 
@@ -37,6 +37,7 @@ export default function App() {
   const [loadingDemo, setLoadingDemo] = useState(false)
   const [detecting, setDetecting] = useState(false)
   const [notice, setNotice] = useState('')
+  const [uploadQuality, setUploadQuality] = useState<FloorPlanQuality>()
   const step = project.viewState.activeStep
   const copy = guidance[step]
 
@@ -44,15 +45,29 @@ export default function App() {
   useEffect(() => {
     if (project.calibration) setCalibrationPoints([project.calibration.imagePointA, project.calibration.imagePointB])
   }, [project.calibration])
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 3000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
 
   const loadFile = async (file?: File) => {
     if (!file) return
     try {
       setError('')
-      setFloorPlanImage(await fileToFloorPlan(file))
+      setUploadQuality(undefined)
+      const floorPlan = await fileToFloorPlan(file)
+      const quality = await inspectFloorPlanQuality(floorPlan.dataUrl, floorPlan.widthPx, floorPlan.heightPx)
+      if (!quality.accepted) {
+        setUploadQuality(quality)
+        return
+      }
+      setFloorPlanImage(floorPlan)
       setCalibrationPoints([])
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '이미지를 불러오지 못했어요.')
+    } finally {
+      if (inputRef.current) inputRef.current.value = ''
     }
   }
 
@@ -60,6 +75,7 @@ export default function App() {
     try {
       setLoadingDemo(true)
       setError('')
+      setUploadQuality(undefined)
       setFloorPlanImage(await urlToFloorPlan('/sample_map.png', 'sample_map.png'))
       setCalibrationPoints([])
     } catch {
@@ -122,9 +138,22 @@ export default function App() {
 
         {step === 'upload' ? (
           <div className="upload-panel">
-            <div className="upload-illustration"><FileImage size={42} strokeWidth={1.5} /><span className="measure-line">3,900 mm</span></div>
             <h2>평면도 한 장이면 충분해요</h2>
-            <p>PNG 또는 JPG · 도면의 치수가 잘 보이는 이미지를 권장해요.</p>
+            <p>고해상도 컬러 원본을 준비해 주세요. 작은 썸네일·흑백 도면·흐릿한 사진은 자동 인식이 어려워요.</p>
+            <div className="upload-guide" aria-label="도면 이미지 첨부 가이드">
+              <figure className="good"><div><img src="/sample_map.png" alt="선명한 고해상도 컬러 평면도 예시" /></div><figcaption><CheckCircle2 size={14} /><span><b>이렇게 첨부해요</b>선명한 컬러 원본</span></figcaption></figure>
+              <figure className="low-resolution"><div><img src="/sample_map.png" alt="화질이 낮은 작은 도면 예시" /></div><figcaption><XCircle size={14} /><span><b>피해 주세요</b>작은 캡처·썸네일</span></figcaption></figure>
+              <figure className="monochrome"><div><img src="/sample_map.png" alt="흑백 도면 예시" /></div><figcaption><XCircle size={14} /><span><b>피해 주세요</b>흑백·저대비 도면</span></figcaption></figure>
+            </div>
+            <ul className="upload-checklist">
+              <li>짧은 변 700px 이상 · 약 100만 화소 이상</li>
+              <li>벽, 방, 문, 창이 색상과 선으로 또렷하게 구분</li>
+              <li>메신저 미리보기 대신 원본 파일 사용</li>
+            </ul>
+            {uploadQuality && <div className="upload-quality-error" role="alert">
+              <div><Info size={17} /><span><b>이 도면은 자동 인식하기 어려워요</b>다음 단계로 이동하지 않았습니다. 아래 내용을 확인하고 다시 첨부해 주세요.</span></div>
+              <ul>{uploadQuality.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
+            </div>}
             <button className="primary-button" onClick={() => inputRef.current?.click()}><Upload size={18} /> 내 도면 선택하기</button>
             <button className="secondary-button" onClick={loadDemo} disabled={loadingDemo}><Sparkles size={17} /> {loadingDemo ? '불러오는 중…' : '예시 도면으로 시작'}</button>
             <input ref={inputRef} type="file" accept="image/png,image/jpeg" hidden onChange={(e) => void loadFile(e.target.files?.[0])} />

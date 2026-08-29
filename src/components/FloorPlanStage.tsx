@@ -457,9 +457,9 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
         <button onClick={() => setView((v) => ({ ...v, scale: Math.min(v.scale * 1.25, fit.scale * 6) }))} aria-label="확대">＋</button>
         <button onClick={() => setView((v) => ({ ...v, scale: Math.max(v.scale / 1.25, fit.scale * 0.7) }))} aria-label="축소">−</button>
       </div>
-      <button className={`pan-toggle ${panMode ? 'active' : ''}`} onClick={() => setPanMode((active) => !active)} aria-pressed={panMode} aria-label="도면 이동 모드">
+      {!(step === 'walls' && wallStart) && <button className={`pan-toggle ${panMode ? 'active' : ''}`} onClick={() => setPanMode((active) => !active)} aria-pressed={panMode} aria-label="도면 이동 모드">
         <Hand size={19} /><span>{panMode ? '이동 중' : '도면 이동'}</span>
-      </button>
+      </button>}
       {step === 'walls' && interactionMode === 'create' && wallStart && (
         <div className="draft-actions">
           {wallEnd && project.calibration && <>

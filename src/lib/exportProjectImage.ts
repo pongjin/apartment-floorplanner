@@ -1,18 +1,5 @@
 import type { Project } from '../types/project'
-
-const download = (canvas: HTMLCanvasElement, filename: string) => {
-  canvas.toBlob((blob) => {
-    if (!blob) return
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-  }, 'image/png')
-}
+import { canvasToPngBlob, shareOrDownloadPng } from './shareImage'
 
 export async function exportProject2D(project: Project) {
   const imageData = project.floorPlanImage
@@ -70,5 +57,5 @@ export async function exportProject2D(project: Project) {
     context.fillText(item.name, 0, 0, width * .9)
     context.restore()
   })
-  download(canvas, '집그림-2D.png')
+  await shareOrDownloadPng(await canvasToPngBlob(canvas), '집그림-2D.png', '집그림 2D 도면')
 }

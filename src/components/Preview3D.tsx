@@ -1,37 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type ComponentRef, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { ContactShadows, Grid, Html, OrbitControls } from '@react-three/drei'
-import { Box, Download, Hand, Move, MoveVertical, RotateCcw, RotateCw, Trash2 } from 'lucide-react'
+import { Box, Hand, Move, MoveVertical, RotateCcw, RotateCw, Share2, Trash2 } from 'lucide-react'
 import { MOUSE, TOUCH } from 'three'
 import { useProjectStore } from '../store/projectStore'
 import { furnitureColors } from '../lib/furniturePresets'
 import { exportProject2D } from '../lib/exportProjectImage'
+import { canvasToPngBlob, shareOrDownloadPng } from '../lib/shareImage'
 import type { FurnitureItem, Opening, Wall } from '../types/project'
 
 const meter = (mm: number) => mm / 1000
 
 type Center = { x: number; z: number }
 
-function downloadCanvas(canvas: HTMLCanvasElement, filename: string) {
-  canvas.toBlob((blob) => {
-    if (!blob) return
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-  }, 'image/png')
-}
-
-function CaptureBridge({ captureRef }: { captureRef: MutableRefObject<(() => void) | null> }) {
+function CaptureBridge({ captureRef }: { captureRef: MutableRefObject<(() => Promise<void>) | null> }) {
   const { gl, scene, camera } = useThree()
   useEffect(() => {
-    captureRef.current = () => {
+    captureRef.current = async () => {
       gl.render(scene, camera)
-      downloadCanvas(gl.domElement, '집그림-3D-현재시점.png')
+      await shareOrDownloadPng(await canvasToPngBlob(gl.domElement), '집그림-3D-현재시점.png', '집그림 3D 현재 시점')
     }
     return () => { captureRef.current = null }
   }, [camera, captureRef, gl, scene])
@@ -300,8 +287,9 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
   const [resetKey, setResetKey] = useState(0)
   const [selectedFurnitureId, setSelectedFurnitureId] = useState<string>()
   const [axisDragging, setAxisDragging] = useState(false)
-  const [cameraMode, setCameraMode] = useState<'orbit' | 'pan'>('orbit')
-  const captureRef = useRef<(() => void) | null>(null)
+  const [cameraMode, setCameraMode] = useState<'orbit' | 'pan'>(() =>
+    window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 620 ? 'pan' : 'orbit')
+  const captureRef = useRef<(() => Promise<void>) | null>(null)
   const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null)
   const resolvedOpenings = useMemo(() => resolveOpenings(project.openings, project.walls), [project.openings, project.walls])
   const selectedFurniture = project.furniture.find((item) => item.id === selectedFurnitureId)
@@ -442,10 +430,10 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
       <button onClick={() => setActiveStep('furniture')}><Box size={16} /> 2D 배치로 돌아가기</button>
       <button className={cameraMode === 'pan' ? 'active' : ''} onClick={() => setCameraMode((mode) => mode === 'pan' ? 'orbit' : 'pan')}><Hand size={16} /> {cameraMode === 'pan' ? '회전 모드' : '시점 이동'}</button>
       <button onClick={resetCamera}><RotateCcw size={16} /> 시점 초기화</button>
-      <button onClick={() => captureRef.current?.()}><Download size={16} /> 현재 3D 저장</button>
+      <button onClick={() => void captureRef.current?.()}><Share2 size={16} /> 현재 3D 저장</button>
     </div>
     {!!project.furniture.length && <div className="preview3d-object-list"><span>가구 선택</span>{project.furniture.map((item) => <button key={item.id} className={item.id === selectedFurnitureId ? 'active' : ''} onClick={() => setSelectedFurnitureId(item.id)}>{item.name}</button>)}</div>}
-    <div className="preview3d-legend"><b>3D 미리보기</b><span>{cameraMode === 'pan' ? '드래그 시점 이동 · 두 손가락 확대' : '좌클릭 회전 · 우클릭 이동 · 휠 확대'}</span><small>프리셋은 치수 기반 간소화 모델입니다.</small></div>
+    {!exportMode && <div className="preview3d-legend"><b>3D 미리보기</b><span>{cameraMode === 'pan' ? '한 손가락 이동 · 두 손가락 확대' : '한 손가락 회전 · 두 손가락 확대/이동'}</span><small>프리셋은 치수 기반 간소화 모델입니다.</small></div>}
     {selectedFurniture && <aside className="preview3d-inspector">
       <div className="preview3d-inspector-head"><div><b>{selectedFurniture.name}</b><span>3D에서 위치와 색상 수정</span></div><button onClick={() => setSelectedFurnitureId(undefined)}>×</button></div>
       <div className="preview3d-position-fields">
@@ -464,11 +452,15 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
         {furnitureColors.map((color) => <button key={color.value} className={selectedFurniture.color.toUpperCase() === color.value ? 'active' : ''} title={color.name} aria-label={color.name} onClick={() => updateFurniture(selectedFurniture.id, { color: color.value })}><i style={{ background: color.value }} /></button>)}
         <label title="세부 RGB"><input type="color" value={selectedFurniture.color} onChange={(event) => updateFurniture(selectedFurniture.id, { color: event.target.value })} /><span>RGB</span></label>
       </div>
+      <div className="preview3d-inspector-actions">
+        <button onClick={() => updateFurniture(selectedFurniture.id, { rotationDeg: (selectedFurniture.rotationDeg + 90) % 360 })}><RotateCw size={15} /> 90° 회전</button>
+        <button className="remove" onClick={() => { deleteFurniture(selectedFurniture.id); setSelectedFurnitureId(undefined) }}><Trash2 size={15} /> 가구 제거</button>
+      </div>
     </aside>}
     {exportMode && <aside className="export-panel">
-      <b>이미지로 저장</b><span>편집 데이터 대신 PNG 이미지만 내려받습니다.</span>
-      <button onClick={() => void exportProject2D(project)}><Download size={18} /> 2D 도면 PNG 저장</button>
-      <button className="primary" onClick={() => captureRef.current?.()}><Download size={18} /> 현재 시점 3D PNG 저장</button>
+      <b>이미지로 저장</b><span>모바일에서는 공유 창에서 ‘이미지 저장’을 선택할 수 있어요.</span>
+      <button onClick={() => void exportProject2D(project)}><Share2 size={18} /> 2D 도면 공유·저장</button>
+      <button className="primary" onClick={() => void captureRef.current?.()}><Share2 size={18} /> 현재 3D 공유·저장</button>
     </aside>}
   </div>
 }
