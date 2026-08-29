@@ -1,0 +1,24 @@
+# Dependencies and build output
+node_modules/
+.pnpm-store/
+dist/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+*.local
+
+# Vercel local project metadata
+.vercel/
+
+# Editor, OS, and logs
+.DS_Store
+.idea/
+.vscode/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# TypeScript incremental cache
+*.tsbuildinfo

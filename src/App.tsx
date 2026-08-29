@@ -1,0 +1,163 @@
+import { useEffect, useRef, useState } from 'react'
+import { FileImage, Home, Info, RotateCcw, Ruler, ScanLine, Sparkles, Trash2, Undo2, Upload } from 'lucide-react'
+import { FloorPlanStage } from './components/FloorPlanStage'
+import { FurnitureLibrary } from './components/FurnitureLibrary'
+import { Preview3D } from './components/Preview3D'
+import { StepBar } from './components/StepBar'
+import { distance } from './lib/geometry'
+import { detectFloorPlan } from './lib/floorPlanDetection'
+import { fileToFloorPlan, urlToFloorPlan } from './hooks/useImageUpload'
+import { useProjectStore } from './store/projectStore'
+import type { PointPx, ScaleCalibration } from './types/project'
+
+const guidance = {
+  upload: { eyebrow: 'STEP 1', title: '평면도를 준비해 주세요', body: '휴대폰에 저장된 도면을 선택하거나 예시 도면으로 먼저 둘러보세요.' },
+  scale: { eyebrow: 'STEP 2', title: '도면의 기준 길이를 알려주세요', body: '실제 길이를 아는 선의 양 끝을 도면에서 차례로 눌러주세요.' },
+  walls: { eyebrow: 'STEP 3', title: '도면 구조를 확인해 주세요', body: '수정과 생성을 전환하고, 두 점으로 벽·문·창을 추가하세요.' },
+  furniture: { eyebrow: 'STEP 4', title: '가구를 배치해 보세요', body: '프리셋을 누르거나 내 가구를 만들고, 도면에서 끌어 배치하세요.' },
+  preview3d: { eyebrow: 'STEP 5', title: '3D로 공간을 확인하세요', body: '드래그해서 회전하고, 휠로 확대하거나 두 손가락으로 이동하세요.' },
+  export: { eyebrow: 'STEP 6', title: '완성 이미지를 저장하세요', body: '2D 도면과 현재 보고 있는 3D 시점을 각각 PNG로 저장할 수 있어요.' },
+} as const
+
+export default function App() {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const project = useProjectStore((s) => s.project)
+  const hydrated = useProjectStore((s) => s.hydrated)
+  const hydrate = useProjectStore((s) => s.hydrate)
+  const setFloorPlanImage = useProjectStore((s) => s.setFloorPlanImage)
+  const setCalibration = useProjectStore((s) => s.setCalibration)
+  const setActiveStep = useProjectStore((s) => s.setActiveStep)
+  const clearWalls = useProjectStore((s) => s.clearWalls)
+  const undoLastWall = useProjectStore((s) => s.undoLastWall)
+  const setDetectedLayout = useProjectStore((s) => s.setDetectedLayout)
+  const resetProject = useProjectStore((s) => s.resetProject)
+  const [calibrationPoints, setCalibrationPoints] = useState<PointPx[]>([])
+  const [knownLength, setKnownLength] = useState('3900')
+  const [error, setError] = useState('')
+  const [loadingDemo, setLoadingDemo] = useState(false)
+  const [detecting, setDetecting] = useState(false)
+  const [notice, setNotice] = useState('')
+  const step = project.viewState.activeStep
+  const copy = guidance[step]
+
+  useEffect(() => { void hydrate() }, [hydrate])
+  useEffect(() => {
+    if (project.calibration) setCalibrationPoints([project.calibration.imagePointA, project.calibration.imagePointB])
+  }, [project.calibration])
+
+  const loadFile = async (file?: File) => {
+    if (!file) return
+    try {
+      setError('')
+      setFloorPlanImage(await fileToFloorPlan(file))
+      setCalibrationPoints([])
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '이미지를 불러오지 못했어요.')
+    }
+  }
+
+  const loadDemo = async () => {
+    try {
+      setLoadingDemo(true)
+      setError('')
+      setFloorPlanImage(await urlToFloorPlan('/sample_map.png', 'sample_map.png'))
+      setCalibrationPoints([])
+    } catch {
+      setError('예시 도면을 불러오지 못했어요.')
+    } finally {
+      setLoadingDemo(false)
+    }
+  }
+
+  const calibrate = () => {
+    const realLengthMm = Number(knownLength)
+    if (calibrationPoints.length !== 2) return setError('도면에서 기준선의 양 끝을 먼저 선택해 주세요.')
+    if (!Number.isFinite(realLengthMm) || realLengthMm <= 0) return setError('실제 길이를 0보다 큰 숫자로 입력해 주세요.')
+    const pixelDistance = distance(calibrationPoints[0], calibrationPoints[1])
+    if (pixelDistance < 5) return setError('두 점을 조금 더 멀리 선택해 주세요.')
+    const calibration: ScaleCalibration = {
+      imagePointA: calibrationPoints[0], imagePointB: calibrationPoints[1], realLengthMm,
+      pixelDistance, mmPerPixel: realLengthMm / pixelDistance, calibratedAt: new Date().toISOString(),
+    }
+    setError('')
+    setCalibration(calibration)
+  }
+
+  const autoDetect = async () => {
+    if (!project.floorPlanImage || !project.calibration) return
+    if (project.walls.length && !window.confirm('현재 벽을 자동 인식 결과로 바꿀까요?')) return
+    try {
+      setDetecting(true)
+      setError('')
+      setNotice('')
+      const result = await detectFloorPlan(project.floorPlanImage, project.calibration)
+      if (!result.walls.length) throw new Error('굵은 벽선을 찾지 못했어요. 수동 그리기를 이용해 주세요.')
+      setDetectedLayout(result.walls, result.openings)
+      setNotice(`벽 ${result.summary.wallCount}개 · 문 ${result.summary.doorCount}개 · 창 ${result.summary.windowCount}개 후보를 찾았어요.`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '도면 자동 인식에 실패했어요.')
+    } finally {
+      setDetecting(false)
+    }
+  }
+
+  if (!hydrated) return <div className="loading-screen"><div className="brand-mark"><Home size={22} /></div><span>저장된 집을 불러오는 중…</span></div>
+
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div className="brand"><span className="brand-mark"><Home size={18} /></span><span>집그림</span></div>
+        <span className="save-state">자동 저장됨</span>
+        <button className="icon-button" aria-label="새 프로젝트" title="새 프로젝트" onClick={() => {
+          if (window.confirm('현재 작업을 두고 새로 시작할까요?')) { resetProject(); setCalibrationPoints([]) }
+        }}><RotateCcw size={18} /></button>
+      </header>
+      <StepBar />
+
+      <section className="workspace">
+        <div className="workspace-heading">
+          <div><span>{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.body}</p></div>
+          {step === 'walls' && <div className="wall-count"><b>{project.walls.length}</b><span>벽 · 개구부 {project.openings.length}</span></div>}
+        </div>
+
+        {step === 'upload' ? (
+          <div className="upload-panel">
+            <div className="upload-illustration"><FileImage size={42} strokeWidth={1.5} /><span className="measure-line">3,900 mm</span></div>
+            <h2>평면도 한 장이면 충분해요</h2>
+            <p>PNG 또는 JPG · 도면의 치수가 잘 보이는 이미지를 권장해요.</p>
+            <button className="primary-button" onClick={() => inputRef.current?.click()}><Upload size={18} /> 내 도면 선택하기</button>
+            <button className="secondary-button" onClick={loadDemo} disabled={loadingDemo}><Sparkles size={17} /> {loadingDemo ? '불러오는 중…' : '예시 도면으로 시작'}</button>
+            <input ref={inputRef} type="file" accept="image/png,image/jpeg" hidden onChange={(e) => void loadFile(e.target.files?.[0])} />
+          </div>
+        ) : project.floorPlanImage ? (
+          step === 'preview3d' || step === 'export' ? <Preview3D exportMode={step === 'export'} /> : step === 'furniture' ? <div className="furniture-workspace">
+            <FloorPlanStage calibrationPoints={calibrationPoints} setCalibrationPoints={setCalibrationPoints} />
+            <FurnitureLibrary />
+          </div> : <FloorPlanStage calibrationPoints={calibrationPoints} setCalibrationPoints={setCalibrationPoints} />
+        ) : null}
+      </section>
+
+      {error && <div className="error-toast" role="alert"><Info size={16} />{error}</div>}
+      {notice && <div className="success-toast" role="status"><ScanLine size={16} />{notice}<button onClick={() => setNotice('')}>×</button></div>}
+
+      {step === 'scale' && (
+        <aside className="bottom-sheet">
+          <div className="sheet-handle" />
+          <div className="sheet-row"><div><span className="field-label">선택한 기준선</span><strong>{calibrationPoints.length}/2 지점 선택</strong></div><button className="text-button" onClick={() => setCalibrationPoints([])}>다시 선택</button></div>
+          <label className="length-field"><span><Ruler size={18} /> 실제 길이</span><div><input inputMode="numeric" value={knownLength} onChange={(e) => setKnownLength(e.target.value.replace(/[^0-9]/g, ''))} /><b>mm</b></div></label>
+          <button className="primary-button" onClick={calibrate} disabled={calibrationPoints.length !== 2}>축척 적용하고 벽 그리기</button>
+        </aside>
+      )}
+
+      {step === 'walls' && (
+        <aside className="bottom-toolbar">
+          <button className="danger-tool" onClick={() => project.walls.length && window.confirm('그린 벽을 모두 지울까요?') && clearWalls()} disabled={!project.walls.length}><Trash2 size={18} /><span>전체 삭제</span></button>
+          <button className="undo-tool" onClick={undoLastWall} disabled={!project.walls.length}><Undo2 size={19} /><span>한 단계 취소</span></button>
+          <button className="detect-tool" onClick={() => void autoDetect()} disabled={detecting}><ScanLine size={19} /><span>{detecting ? '인식 중…' : '자동 인식'}</span></button>
+          <div className="wall-tip"><span className="tip-dot" /><p><b>새 벽 그리기</b><br />두 점 선택 후 생성</p></div>
+          <button className="next-button" onClick={() => setActiveStep('furniture')} disabled={!project.walls.length}>다음</button>
+        </aside>
+      )}
+    </main>
+  )
+}
