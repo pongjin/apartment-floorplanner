@@ -146,7 +146,7 @@ export default function App() {
               <figure className="monochrome"><div><img src="/sample_map.png" alt="흑백 도면 예시" /></div><figcaption><XCircle size={14} /><span><b>피해 주세요</b>흑백·저대비 도면</span></figcaption></figure>
             </div>
             <ul className="upload-checklist">
-              <li>짧은 변 700px 이상 · 약 100만 화소 이상</li>
+              <li>권장: 짧은 변 500px 이상 · 원본에 가까운 크기</li>
               <li>벽, 방, 문, 창이 색상과 선으로 또렷하게 구분</li>
               <li>메신저 미리보기 대신 원본 파일 사용</li>
             </ul>

@@ -6,7 +6,7 @@ type Axis = 'horizontal' | 'vertical'
 type PixelOpening = {
   offsetPx: number
   widthPx: number
-  kind?: 'swing' | 'sliding' | 'window'
+  kind?: 'swing' | 'window'
 }
 
 type PixelLine = {
@@ -69,6 +69,34 @@ function findBands(values: number[], minimumInk: number, maximumGap: number) {
   return bands
 }
 
+function mergeNearbyBands(bands: { start: number; end: number; ink: number }[], totalLength: number) {
+  if (!bands.length) return undefined
+  const minimumSeedHeight = totalLength * .16
+  const seed = [...bands].sort((a, b) => {
+    const aScore = a.ink * Math.min(1, (a.end - a.start + 1) / minimumSeedHeight)
+    const bScore = b.ink * Math.min(1, (b.end - b.start + 1) / minimumSeedHeight)
+    return bScore - aScore
+  })[0]
+  let start = seed.start
+  let end = seed.end
+  let changed = true
+  const mergeDistance = Math.max(4, totalLength * .12)
+  while (changed) {
+    changed = false
+    for (const band of bands) {
+      const gap = band.end < start ? start - band.end : band.start > end ? band.start - end : 0
+      if (gap <= mergeDistance && (band.end - band.start + 1 >= totalLength * .012 || band.ink >= seed.ink * .015)) {
+        const nextStart = Math.min(start, band.start)
+        const nextEnd = Math.max(end, band.end)
+        if (nextStart !== start || nextEnd !== end) changed = true
+        start = nextStart
+        end = nextEnd
+      }
+    }
+  }
+  return { start, end }
+}
+
 function findDrawingBounds(mask: Uint8Array, width: number, height: number): PixelBounds {
   const rowInk = Array.from({ length: height }, (_, y) => {
     let count = 0
@@ -76,7 +104,7 @@ function findDrawingBounds(mask: Uint8Array, width: number, height: number): Pix
     return count
   })
   const rowBands = findBands(rowInk, Math.max(2, Math.round(width * .008)), Math.max(2, Math.round(height * .025)))
-  const rowBand = rowBands.sort((a, b) => b.ink - a.ink)[0]
+  const rowBand = mergeNearbyBands(rowBands, height)
   if (!rowBand) return { left: 0, top: 0, right: width - 1, bottom: height - 1 }
 
   const columnInk = Array.from({ length: width }, (_, x) => {
@@ -158,7 +186,7 @@ function hasQuarterArc(mask: Uint8Array, width: number, height: number, line: Pi
 
   for (const hingeAtEnd of [false, true]) {
     for (const perpendicularSign of [-1, 1]) {
-      for (const radiusRatio of [.7, .85, 1, 1.15]) {
+      for (const radiusRatio of [.45, .6, .75, .9, 1.05, 1.2, 1.4]) {
         const radius = candidate.widthPx * radiusRatio
         let hits = 0
         for (const degree of angles) {
@@ -170,18 +198,7 @@ function hasQuarterArc(mask: Uint8Array, width: number, height: number, line: Pi
           const y = line.axis === 'horizontal' ? line.coordinate + perpendicular : hinge + along
           if (hasPixelNear(mask, width, height, x, y, Math.max(1, Math.round(radius * .055)))) hits += 1
         }
-        let leafHits = 0
-        for (const fraction of [.25, .4, .55, .7, .85]) {
-          const perpendicular = radius * fraction * perpendicularSign
-          const hinge = hingeAtEnd ? gapEnd : gapStart
-          const x = line.axis === 'horizontal' ? hinge : line.coordinate + perpendicular
-          const y = line.axis === 'horizontal' ? line.coordinate + perpendicular : hinge
-          if (hasPixelNear(mask, width, height, x, y, Math.max(1, Math.round(radius * .045)))) leafHits += 1
-        }
-        // Tiny floor-plan thumbnails often preserve the swing arc but blur the
-        // radial door leaf into a single pixel. Keep the leaf as corroborating
-        // evidence without requiring a long, perfectly perpendicular stroke.
-        if (hits >= 6 && leafHits >= 1) return true
+        if (hits >= 6) return true
       }
     }
   }
@@ -207,26 +224,43 @@ function countParallelStrokes(mask: Uint8Array, width: number, height: number, l
   return strokes
 }
 
-function classifyOpenings(lines: PixelLine[], symbols: Uint8Array, width: number, height: number, bounds: PixelBounds, detectionMmPerPixel: number) {
-  const exteriorTolerance = Math.max(6, Math.min(bounds.right - bounds.left, bounds.bottom - bounds.top) * .09)
-  const horizontalCoordinates = lines.filter((line) => line.axis === 'horizontal').map((line) => line.coordinate)
-  const verticalCoordinates = lines.filter((line) => line.axis === 'vertical').map((line) => line.coordinate)
-  const horizontalExtent = { minimum: Math.min(...horizontalCoordinates), maximum: Math.max(...horizontalCoordinates) }
-  const verticalExtent = { minimum: Math.min(...verticalCoordinates), maximum: Math.max(...verticalCoordinates) }
+function sideContentRatio(data: Uint8ClampedArray, width: number, height: number, line: PixelLine, candidate: PixelOpening, side: -1 | 1) {
+  const openingStart = line.start + candidate.offsetPx
+  const depthStart = Math.max(3, line.thickness * 1.5)
+  const depthEnd = Math.max(depthStart + 2, Math.min(30, candidate.widthPx * .42))
+  let content = 0
+  let samples = 0
+  for (let alongFraction = .15; alongFraction <= .85; alongFraction += .1) {
+    for (let depth = depthStart; depth <= depthEnd; depth += 2) {
+      const along = openingStart + candidate.widthPx * alongFraction
+      const x = Math.round(line.axis === 'horizontal' ? along : line.coordinate + depth * side)
+      const y = Math.round(line.axis === 'horizontal' ? line.coordinate + depth * side : along)
+      if (x < 0 || y < 0 || x >= width || y >= height) continue
+      const offset = (y * width + x) * 4
+      const maximum = Math.max(data[offset], data[offset + 1], data[offset + 2])
+      const minimum = Math.min(data[offset], data[offset + 1], data[offset + 2])
+      const luminance = data[offset] * .299 + data[offset + 1] * .587 + data[offset + 2] * .114
+      if (maximum - minimum > 10 || luminance < 238) content += 1
+      samples += 1
+    }
+  }
+  return content / Math.max(1, samples)
+}
+
+function classifyOpenings(lines: PixelLine[], symbols: Uint8Array, pixels: Uint8ClampedArray, width: number, height: number, detectionMmPerPixel: number) {
   for (const line of lines) {
     for (const candidate of line.openings) {
       const widthMm = candidate.widthPx * detectionMmPerPixel
       const hasArc = widthMm <= 1900 && hasQuarterArc(symbols, width, height, line, candidate)
       const parallelStrokes = countParallelStrokes(symbols, width, height, line, candidate)
-      const extent = line.axis === 'horizontal' ? horizontalExtent : verticalExtent
-      const nearExterior = Math.min(Math.abs(line.coordinate - extent.minimum), Math.abs(line.coordinate - extent.maximum)) <= exteriorTolerance
-      // Repeated strokes on the envelope are a strong window signature. In
-      // the interior, a verified swing arc takes precedence; otherwise the
-      // same parallel-stroke pattern represents a sliding opening.
-      if (parallelStrokes >= 2 && nearExterior) candidate.kind = 'window'
-      else if (hasArc && !nearExterior) candidate.kind = 'swing'
-      else if (parallelStrokes >= 2 && widthMm >= 1050) candidate.kind = 'sliding'
-      else candidate.kind = 'window'
+      const firstSide = sideContentRatio(pixels, width, height, line, candidate, -1)
+      const secondSide = sideContentRatio(pixels, width, height, line, candidate, 1)
+      const exposedToBackground = Math.min(firstSide, secondSide) < .14 && Math.max(firstSide, secondSide) > .28
+      // Automatic recognition intentionally emits only ordinary swing doors
+      // and windows. Sliding/balcony doors remain explicit manual tools.
+      if (hasArc) candidate.kind = 'swing'
+      else if (parallelStrokes >= 2 && exposedToBackground) candidate.kind = 'window'
+      else if (!exposedToBackground) candidate.kind = 'swing'
     }
   }
 }
@@ -401,7 +435,7 @@ export async function detectFloorPlan(imageData: FloorPlanImage, calibration: Sc
   ], Math.min(bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1))
   const detectionMmPerPixel = estimateDetectionScale(raw)
   const lines = removeDuplicates(mergeCollinear(raw, detectionMmPerPixel), detectionMmPerPixel)
-  classifyOpenings(lines, symbols, canvas.width, canvas.height, bounds, detectionMmPerPixel)
+  classifyOpenings(lines, symbols, pixels.data, canvas.width, canvas.height, detectionMmPerPixel)
   const walls: Wall[] = []
   const openings: Opening[] = []
 
@@ -421,13 +455,14 @@ export async function detectFloorPlan(imageData: FloorPlanImage, calibration: Sc
       heightMm: 2400,
     })
     for (const candidate of line.openings) {
+      if (!candidate.kind) continue
       const widthMm = candidate.widthPx / analysisScale * calibration.mmPerPixel
       openings.push({
         id: nanoid(),
         wallId,
         detected: true,
         type: candidate.kind === 'window' ? 'window' : 'door',
-        doorKind: candidate.kind === 'swing' ? 'swing' : candidate.kind === 'sliding' ? 'sliding' : undefined,
+        doorKind: candidate.kind === 'swing' ? 'swing' : undefined,
         offsetMm: candidate.offsetPx / analysisScale * calibration.mmPerPixel,
         widthMm,
         heightMm: candidate.kind === 'window' ? 1200 : 2100,

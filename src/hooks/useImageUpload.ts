@@ -40,8 +40,8 @@ export async function inspectFloorPlanQuality(dataUrl: string, width: number, he
   const megapixels = width * height / 1_000_000
   const shorterSide = Math.min(width, height)
   const longerSide = Math.max(width, height)
-  if (shorterSide < 700 || longerSide < 1100 || megapixels < .9) {
-    issues.push(`해상도가 ${width}×${height}px로 너무 낮아요. 짧은 변 700px 이상, 약 100만 화소 이상의 원본을 선택해 주세요.`)
+  if (shorterSide < 320 || longerSide < 480 || megapixels < .15) {
+    issues.push(`해상도가 ${width}×${height}px로 너무 낮아요. 짧은 변 320px, 긴 변 480px 이상의 이미지를 선택해 주세요.`)
   }
 
   const image = await loadImage(dataUrl)
@@ -89,8 +89,11 @@ export async function inspectFloorPlanQuality(dataUrl: string, width: number, he
   const mean = sum / Math.max(1, visible)
   const contrast = Math.sqrt(Math.max(0, sumSquared / Math.max(1, visible) - mean * mean))
   const edgeRatio = sharpEdges / Math.max(1, edgeSamples)
-  if (colorRatio < .012) issues.push('색상 정보가 거의 없는 흑백 도면이에요. 벽·문·창 영역이 색으로 구분된 도면을 선택해 주세요.')
-  if (contrast < 24 || edgeRatio < .012) issues.push('선이 흐리거나 대비가 낮아 구조를 구분하기 어려워요. 흔들림 없는 원본 이미지나 선명한 캡처를 선택해 주세요.')
+  const lowClarity = contrast < 24 || edgeRatio < .012
+  // A clean monochrome CAD drawing can be easier to read than a blurry color
+  // photo. Reject grayscale only when it is also low-contrast or lacks edges.
+  if (colorRatio < .012 && lowClarity) issues.push('흑백이면서 선 대비가 낮아 구조를 구분하기 어려워요. 더 선명한 원본이나 컬러 도면을 선택해 주세요.')
+  else if (lowClarity) issues.push('선이 흐리거나 대비가 낮아 구조를 구분하기 어려워요. 흔들림 없는 원본 이미지나 선명한 캡처를 선택해 주세요.')
 
   return {
     accepted: issues.length === 0,
