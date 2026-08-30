@@ -6,6 +6,7 @@
 
 | 날짜 | 커밋 또는 연결 방식 | 작업 | 기록 |
 | --- | --- | --- | --- |
+| 2026-08-30 | 이 기록을 포함하는 커밋 | Windows FP/STR 학습·검증 실행서 작성 | [2026-08-30-windows-str-training-runbook.md](2026-08-30-windows-str-training-runbook.md) |
 | 2026-08-30 | 이 기록을 포함하는 커밋 | 업로드 기준 완화 및 일반문·창 자동인식 회귀 개선 | [2026-08-30-recognition-heuristic-regression.md](2026-08-30-recognition-heuristic-regression.md) |
 | 2026-08-30 | 이 기록을 포함하는 커밋 | 소개 문서 및 커밋 작업 기록 체계 구축 | [2026-08-30-documentation-workflow.md](2026-08-30-documentation-workflow.md) |
 | 2026-08-30 | `ac8fed9` | 모바일 사용성·자동인식·업로드 품질 개선 | [2026-08-30-mobile-recognition.md](2026-08-30-mobile-recognition.md) |

@@ -107,7 +107,7 @@ work_dir/
 └── YYYY-MM-DD-작업명.md       # 작업 목적·변경·검증·배포 기록
 ```
 
-구현 현황과 중요한 설계 결정은 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md), 자동인식 고도화 검토는 [docs/RECOGNITION_ROADMAP.md](docs/RECOGNITION_ROADMAP.md), GitHub·Vercel 운영은 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), 커밋 단위 작업 내역은 [work_dir/INDEX.md](work_dir/INDEX.md)를 참고하세요. 최초 제품 기획은 [apartment-floorplanner-mvp-plan.md](apartment-floorplanner-mvp-plan.md)에 보존되어 있습니다.
+구현 현황과 중요한 설계 결정은 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md), 자동인식 고도화 검토는 [docs/RECOGNITION_ROADMAP.md](docs/RECOGNITION_ROADMAP.md), Windows RTX 4060 학습·검증 인수인계는 [docs/WINDOWS_STR_TRAINING_RUNBOOK.md](docs/WINDOWS_STR_TRAINING_RUNBOOK.md), GitHub·Vercel 운영은 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), 커밋 단위 작업 내역은 [work_dir/INDEX.md](work_dir/INDEX.md)를 참고하세요. 최초 제품 기획은 [apartment-floorplanner-mvp-plan.md](apartment-floorplanner-mvp-plan.md)에 보존되어 있습니다.
 
 ## 알려진 제약
 

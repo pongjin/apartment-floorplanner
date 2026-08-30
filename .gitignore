@@ -22,3 +22,10 @@ pnpm-debug.log*
 
 # TypeScript incremental cache
 *.tsbuildinfo
+
+# Local AI/ML datasets and generated training artifacts
+/Sample/
+/datasets/
+/data/aihub/
+/artifacts/
+/checkpoints/
