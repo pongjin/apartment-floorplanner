@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import { Box, ImagePlus, PackagePlus, Search, X } from 'lucide-react'
+import { useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { GripHorizontal, ImagePlus, PackagePlus, Search, X } from 'lucide-react'
 import { furnitureCategories, furnitureColors, furniturePresets } from '../lib/furniturePresets'
 import { useProjectStore } from '../store/projectStore'
 import type { FurnitureType } from '../types/project'
@@ -9,13 +9,38 @@ const defaultCustom = { name: '', widthMm: '800', depthMm: '600', heightMm: '750
 export function FurnitureLibrary() {
   const imageRef = useRef<HTMLInputElement>(null)
   const addFurniture = useProjectStore((s) => s.addFurniture)
-  const setActiveStep = useProjectStore((s) => s.setActiveStep)
   const furnitureCount = useProjectStore((s) => s.project.furniture.length)
   const [category, setCategory] = useState<'all' | FurnitureType>('all')
   const [query, setQuery] = useState('')
   const [showCustom, setShowCustom] = useState(false)
   const [custom, setCustom] = useState(defaultCustom)
   const [imageDataUrl, setImageDataUrl] = useState<string>()
+  const libraryStorageKey = window.innerWidth <= 759 ? 'furniture-library-size-mobile' : 'furniture-library-size-desktop'
+  const [librarySize, setLibrarySize] = useState(() => Number(localStorage.getItem(libraryStorageKey)) || (window.innerWidth <= 759 ? 174 : 344))
+
+  const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const mobile = window.innerWidth <= 759
+    const start = mobile ? event.clientY : event.clientX
+    const original = librarySize
+    let current = original
+    const move = (pointerEvent: PointerEvent) => {
+      const delta = (mobile ? pointerEvent.clientY : pointerEvent.clientX) - start
+      const next = Math.round(Math.max(mobile ? 126 : 260, Math.min(mobile ? window.innerHeight * .55 : 520, original - delta)))
+      current = next
+      setLibrarySize(next)
+    }
+    const end = () => {
+      localStorage.setItem(libraryStorageKey, String(current))
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+  }
 
   const filtered = useMemo(() => furniturePresets.filter((item) =>
     (category === 'all' || item.type === category) && item.name.includes(query.trim()),
@@ -35,10 +60,11 @@ export function FurnitureLibrary() {
     setShowCustom(false)
   }
 
-  return <aside className="furniture-library" aria-label="가구 라이브러리">
+  return <aside className="furniture-library" aria-label="가구 라이브러리" style={{ '--library-size': `${librarySize}px` } as CSSProperties}>
+    <button className="library-resize-handle" onPointerDown={startResize} aria-label="가구 라이브러리 크기 조절" title="밀어서 작업 공간 크기 조절"><GripHorizontal size={19} /></button>
     <div className="library-head">
       <div><b>가구 라이브러리</b><span>배치됨 {furnitureCount}개</span></div>
-      <div className="library-actions"><button className="preview-open" onClick={() => setActiveStep('preview3d')}><Box size={15} /> 3D 보기</button><button className="custom-open" onClick={() => setShowCustom(true)}><PackagePlus size={16} /> 내 가구 만들기</button></div>
+      <div className="library-actions"><button className="custom-open" onClick={() => setShowCustom(true)}><PackagePlus size={16} /> 내 가구 만들기</button></div>
     </div>
     <label className="furniture-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="가구 검색" /></label>
     <div className="furniture-categories">

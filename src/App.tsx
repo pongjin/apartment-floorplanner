@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle2, FileImage, Home, Info, RotateCcw, Ruler, ScanLine, Sparkles, Trash2, Undo2, Upload, XCircle } from 'lucide-react'
+import { CheckCircle2, Home, Info, RotateCcw, Ruler, ScanLine, Sparkles, Trash2, Undo2, Upload, XCircle } from 'lucide-react'
 import { FloorPlanStage } from './components/FloorPlanStage'
+import { FloorPlanCropper } from './components/FloorPlanCropper'
 import { FurnitureLibrary } from './components/FurnitureLibrary'
 import { Preview3D } from './components/Preview3D'
 import { StepBar } from './components/StepBar'
 import { distance } from './lib/geometry'
 import { fileToFloorPlan, inspectFloorPlanQuality, urlToFloorPlan, type FloorPlanQuality } from './hooks/useImageUpload'
 import { useProjectStore } from './store/projectStore'
-import type { PointPx, ScaleCalibration } from './types/project'
+import type { FloorPlanImage, PointPx, ScaleCalibration } from './types/project'
 
 const guidance = {
   upload: { eyebrow: 'STEP 1', title: '평면도를 준비해 주세요', body: '휴대폰에 저장된 도면을 선택하거나 예시 도면으로 먼저 둘러보세요.' },
@@ -37,6 +38,8 @@ export default function App() {
   const [detecting, setDetecting] = useState(false)
   const [notice, setNotice] = useState('')
   const [uploadQuality, setUploadQuality] = useState<FloorPlanQuality>()
+  const [pendingFloorPlan, setPendingFloorPlan] = useState<FloorPlanImage>()
+  const [showScaleGuide, setShowScaleGuide] = useState(false)
   const step = project.viewState.activeStep
   const copy = guidance[step]
 
@@ -49,6 +52,26 @@ export default function App() {
     const timer = window.setTimeout(() => setNotice(''), 3000)
     return () => window.clearTimeout(timer)
   }, [notice])
+  useEffect(() => {
+    if (step === 'scale') setShowScaleGuide(true)
+  }, [project.floorPlanImage?.id, step])
+
+  const acceptFloorPlan = async (floorPlan: FloorPlanImage) => {
+    try {
+      const quality = await inspectFloorPlanQuality(floorPlan.dataUrl, floorPlan.widthPx, floorPlan.heightPx)
+      if (!quality.accepted) {
+        setUploadQuality(quality)
+        setPendingFloorPlan(undefined)
+        return
+      }
+      setFloorPlanImage(floorPlan)
+      setCalibrationPoints([])
+      setPendingFloorPlan(undefined)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '자른 도면을 처리하지 못했어요.')
+      setPendingFloorPlan(undefined)
+    }
+  }
 
   const loadFile = async (file?: File) => {
     if (!file) return
@@ -56,13 +79,7 @@ export default function App() {
       setError('')
       setUploadQuality(undefined)
       const floorPlan = await fileToFloorPlan(file)
-      const quality = await inspectFloorPlanQuality(floorPlan.dataUrl, floorPlan.widthPx, floorPlan.heightPx)
-      if (!quality.accepted) {
-        setUploadQuality(quality)
-        return
-      }
-      setFloorPlanImage(floorPlan)
-      setCalibrationPoints([])
+      setPendingFloorPlan(floorPlan)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '이미지를 불러오지 못했어요.')
     } finally {
@@ -120,13 +137,13 @@ export default function App() {
   if (!hydrated) return <div className="loading-screen"><div className="brand-mark"><Home size={22} /></div><span>저장된 집을 불러오는 중…</span></div>
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell step-${step}`}>
       <header className="app-header">
         <div className="brand"><span className="brand-mark"><Home size={18} /></span><span>집그림</span></div>
         <span className="save-state">자동 저장됨</span>
-        <button className="icon-button" aria-label="새 프로젝트" title="새 프로젝트" onClick={() => {
+        <button className="icon-button reset-button" aria-label="프로젝트 초기화" title="프로젝트 초기화" onClick={() => {
           if (window.confirm('현재 작업을 두고 새로 시작할까요?')) { resetProject(); setCalibrationPoints([]) }
-        }}><RotateCcw size={18} /></button>
+        }}><RotateCcw size={18} /><span>초기화</span></button>
       </header>
       <StepBar />
 
@@ -168,6 +185,17 @@ export default function App() {
 
       {error && <div className="error-toast" role="alert"><Info size={16} />{error}</div>}
       {notice && <div className="success-toast" role="status"><ScanLine size={16} />{notice}<button onClick={() => setNotice('')}>×</button></div>}
+
+      {pendingFloorPlan && <FloorPlanCropper floorPlan={pendingFloorPlan} onCancel={() => setPendingFloorPlan(undefined)} onApply={(floorPlan) => void acceptFloorPlan(floorPlan)} />}
+
+      {step === 'scale' && showScaleGuide && <div className="scale-guide-backdrop" role="dialog" aria-modal="true" aria-labelledby="scale-guide-title">
+        <section className="scale-guide-modal">
+          <div className="scale-guide-example" aria-hidden="true"><span className="guide-point start" /><i /><span className="guide-point end" /><b>3,900 mm</b></div>
+          <h2 id="scale-guide-title">축척은 이렇게 설정해요</h2>
+          <p>도면에서 실제 길이를 아는 선의 <b>한쪽 끝과 반대쪽 끝</b>을 차례로 누른 뒤, 그 길이를 mm로 입력하세요.</p>
+          <button className="primary-button" onClick={() => setShowScaleGuide(false)}>확인</button>
+        </section>
+      </div>}
 
       {step === 'scale' && (
         <aside className="bottom-sheet">

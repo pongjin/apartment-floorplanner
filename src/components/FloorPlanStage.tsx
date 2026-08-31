@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import Konva from 'konva'
 import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
-import { Hand } from 'lucide-react'
+import { Copy, Hand, Move, RotateCw, SlidersHorizontal, Trash2 } from 'lucide-react'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { distance, formatMm, mmToPx, pxToMm } from '../lib/geometry'
 import { useProjectStore } from '../store/projectStore'
@@ -26,6 +26,50 @@ function useHtmlImage(src?: string) {
 
 const WALL_SNAP_MAX_GAP_MM = 30
 const WALL_SNAP_MAX_PENETRATION_MM = 80
+const DRAW_SNAP_DISTANCE_PX = 18
+const DRAW_ANGLE_SNAP_RAD = Math.PI / 24
+
+function angularDistance(a: number, b: number) {
+  const difference = Math.abs(a - b) % Math.PI
+  return Math.min(difference, Math.PI - difference)
+}
+
+function snapDraftPoint(candidate: PointPx, start: PointPx | undefined, walls: Wall[], calibrationMmPerPixel: number, scale: number): PointPx {
+  const threshold = DRAW_SNAP_DISTANCE_PX / scale
+  let snapped = candidate
+  let nearest = threshold
+  let snappedToStructure = false
+  for (const wall of walls) {
+    const a = { x: wall.start.x / calibrationMmPerPixel, y: wall.start.y / calibrationMmPerPixel }
+    const b = { x: wall.end.x / calibrationMmPerPixel, y: wall.end.y / calibrationMmPerPixel }
+    for (const endpoint of [a, b]) {
+      const gap = distance(candidate, endpoint)
+      if (gap < nearest) { nearest = gap; snapped = endpoint; snappedToStructure = true }
+    }
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const lengthSquared = dx * dx + dy * dy
+    if (!lengthSquared) continue
+    const ratio = Math.max(0, Math.min(1, ((candidate.x - a.x) * dx + (candidate.y - a.y) * dy) / lengthSquared))
+    const projected = { x: a.x + dx * ratio, y: a.y + dy * ratio }
+    const gap = distance(candidate, projected)
+    if (gap < nearest) { nearest = gap; snapped = projected; snappedToStructure = true }
+  }
+  if (!start || snappedToStructure) return snapped
+  const dx = snapped.x - start.x
+  const dy = snapped.y - start.y
+  const length = Math.hypot(dx, dy)
+  if (length < 1) return snapped
+  const angle = Math.atan2(dy, dx)
+  const wallAngles = walls.map((wall) => Math.atan2(wall.end.y - wall.start.y, wall.end.x - wall.start.x))
+  const target = [0, Math.PI / 2, ...wallAngles].reduce<{ angle: number; gap: number } | undefined>((best, candidateAngle) => {
+    const gap = angularDistance(angle, candidateAngle)
+    return !best || gap < best.gap ? { angle: candidateAngle, gap } : best
+  }, undefined)
+  if (!target || target.gap > DRAW_ANGLE_SNAP_RAD) return snapped
+  const direction = Math.cos(angle - target.angle) >= 0 ? 1 : -1
+  return { x: start.x + Math.cos(target.angle) * length * direction, y: start.y + Math.sin(target.angle) * length * direction }
+}
 
 function snapFurnitureToWalls(item: FurnitureItem, candidate: PointMm, walls: Wall[]): PointMm {
   const angle = item.rotationDeg * Math.PI / 180
@@ -86,6 +130,8 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
   const [selectedOpeningId, setSelectedOpeningId] = useState<string>()
   const [selectedFurnitureId, setSelectedFurnitureId] = useState<string>()
   const [panMode, setPanMode] = useState(false)
+  const [showFurnitureProperties, setShowFurnitureProperties] = useState(false)
+  const [furnitureDragging, setFurnitureDragging] = useState(false)
   const [interactionMode, setInteractionMode] = useState<'edit' | 'create'>('create')
   const project = useProjectStore((s) => s.project)
   const addWall = useProjectStore((s) => s.addWall)
@@ -101,6 +147,8 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
   const step = project.viewState.activeStep
   const selectedOpening = project.openings.find((item) => item.id === selectedOpeningId)
   const selectedFurniture = project.furniture.find((item) => item.id === selectedFurnitureId)
+
+  useEffect(() => setShowFurnitureProperties(false), [selectedFurnitureId])
 
   useEffect(() => {
     if (step !== 'furniture' || !selectedFurniture || panMode) return
@@ -162,12 +210,14 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
       setCalibrationPoints(calibrationPoints.length >= 2 ? [point] : [...calibrationPoints, point])
     }
     if (step === 'walls' && interactionMode === 'create' && project.calibration) {
-      if (!wallStart) setWallStart(point)
-      else if (!wallEnd && distance(wallStart, point) > 3) setWallEnd(point)
+      const snapped = snapDraftPoint(point, wallStart, project.walls, project.calibration.mmPerPixel, view.scale)
+      if (!wallStart) setWallStart(snapped)
+      else if (!wallEnd && distance(wallStart, snapped) > 3) setWallEnd(snapped)
     }
   }
 
   const handleWheel = (event: KonvaEventObject<WheelEvent>) => {
+    if (!panMode) return
     event.evt.preventDefault()
     if (!event.evt.ctrlKey) {
       setView((current) => ({ ...current, x: current.x - event.evt.deltaX, y: current.y - event.evt.deltaY }))
@@ -184,18 +234,22 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
 
   const handleWallTap = (event: KonvaEventObject<MouseEvent | TouchEvent>, wallId: string) => {
     event.cancelBubble = true
-    if (panMode || interactionMode !== 'edit') return
+    if (panMode) return
     const point = pointerInImage()
-    if (step === 'walls' && wallStart && !wallEnd && point && project.calibration) {
-      if (distance(wallStart, point) > 3) setWallEnd(point)
+    if (interactionMode === 'create' && step === 'walls' && point && project.calibration) {
+      const snapped = snapDraftPoint(point, wallStart, project.walls, project.calibration.mmPerPixel, view.scale)
+      if (!wallStart) setWallStart(snapped)
+      else if (!wallEnd && distance(wallStart, snapped) > 3) setWallEnd(snapped)
       setSelectedWallId(undefined)
       return
     }
+    if (interactionMode !== 'edit') return
     setSelectedWallId(wallId)
     setSelectedOpeningId(undefined)
   }
 
   const handleTouchMove = (event: KonvaEventObject<TouchEvent>) => {
+    if (!panMode) return
     const [a, b] = Array.from(event.evt.touches)
     if (!a || !b) return
     event.evt.preventDefault()
@@ -220,6 +274,31 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
     else addStandaloneOpening(start, end, kind)
     setWallStart(undefined)
     setWallEnd(undefined)
+  }
+
+  const startFurnitureDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!selectedFurniture || !project.calibration) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setFurnitureDragging(true)
+    const start = { x: event.clientX, y: event.clientY }
+    const original = selectedFurniture.position
+    const item = selectedFurniture
+    const move = (pointerEvent: PointerEvent) => {
+      const factor = project.calibration!.mmPerPixel / view.scale
+      const candidate = { x: original.x + (pointerEvent.clientX - start.x) * factor, y: original.y + (pointerEvent.clientY - start.y) * factor }
+      updateFurniture(item.id, { position: snapFurnitureToWalls(item, candidate, project.walls) })
+    }
+    const end = () => {
+      setFurnitureDragging(false)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
   }
 
   return (
@@ -285,7 +364,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
               const selected = wall.id === selectedWallId
               const length = distance(wall.start, wall.end)
               return (
-                <Group key={wall.id} listening={interactionMode === 'edit'}>
+                <Group key={wall.id} listening={step === 'walls'}>
                   <Line
                     points={[start.x, start.y, end.x, end.y]}
                     stroke={selected ? '#e85d3f' : '#19a56b'}
@@ -343,7 +422,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
               const selected = opening.id === selectedOpeningId
               const detected = opening.detected !== false
               const detectedColor = opening.type === 'window' ? '#2585ad' : '#df4f36'
-              const openingLabel = opening.detectedClass ?? (opening.type === 'window' ? '창' : opening.doorKind === 'sliding' ? '슬라이딩 도어' : opening.doorKind === 'balcony' ? '베란다 문' : '문')
+              const openingLabel = opening.detectedClass ?? (opening.type === 'window' ? '창' : opening.doorKind === 'sliding' ? '슬라이딩 도어' : opening.doorKind === 'balcony' ? '베란다 창' : '문')
               const confidenceLabel = opening.confidence == null ? '' : ` ${Math.round(opening.confidence * 100)}%`
               const dx = openingEnd.x - openingStart.x
               const dy = openingEnd.y - openingStart.y
@@ -363,7 +442,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
                 <Line points={[openingStart.x, openingStart.y, openingEnd.x, openingEnd.y]} stroke="#dff5fb" strokeWidth={13 / view.scale} opacity={.22} lineCap="square" hitStrokeWidth={20 / view.scale} />
                 <Line points={[openingStart.x + perpendicular.x, openingStart.y + perpendicular.y, openingEnd.x + perpendicular.x, openingEnd.y + perpendicular.y]} stroke={selected ? '#e85d3f' : '#64b8d0'} strokeWidth={2 / view.scale} dash={[6 / view.scale, 3 / view.scale]} />
                 <Line points={[openingStart.x - perpendicular.x, openingStart.y - perpendicular.y, openingEnd.x - perpendicular.x, openingEnd.y - perpendicular.y]} stroke={selected ? '#e85d3f' : '#64b8d0'} strokeWidth={2 / view.scale} dash={[6 / view.scale, 3 / view.scale]} />
-                <Text x={(openingStart.x + openingEnd.x) / 2 - 36 / view.scale} y={(openingStart.y + openingEnd.y) / 2 + 8 / view.scale} width={72 / view.scale} align="center" text="베란다 문" fontSize={10 / view.scale} fontStyle="bold" fill="#368aa4" />
+                <Text x={(openingStart.x + openingEnd.x) / 2 - 36 / view.scale} y={(openingStart.y + openingEnd.y) / 2 + 8 / view.scale} width={72 / view.scale} align="center" text="베란다 창" fontSize={10 / view.scale} fontStyle="bold" fill="#368aa4" />
               </Group>
               return <Group key={opening.id} listening={interactionMode === 'edit'}>
                 <Line points={[openingStart.x, openingStart.y, openingEnd.x, openingEnd.y]} stroke="#fffdf8" strokeWidth={Math.max(5 / view.scale, wallStroke * .45)} lineCap="butt" />
@@ -455,8 +534,8 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
       </div>}
       <div className="canvas-controls">
         <button onClick={() => setView(fit)} aria-label="화면 맞춤">맞춤</button>
-        <button onClick={() => setView((v) => ({ ...v, scale: Math.min(v.scale * 1.25, fit.scale * 6) }))} aria-label="확대">＋</button>
-        <button onClick={() => setView((v) => ({ ...v, scale: Math.max(v.scale / 1.25, fit.scale * 0.7) }))} aria-label="축소">−</button>
+        <button disabled={!panMode} title={!panMode ? '도면 이동을 먼저 눌러주세요' : undefined} onClick={() => setView((v) => ({ ...v, scale: Math.min(v.scale * 1.25, fit.scale * 6) }))} aria-label="확대">＋</button>
+        <button disabled={!panMode} title={!panMode ? '도면 이동을 먼저 눌러주세요' : undefined} onClick={() => setView((v) => ({ ...v, scale: Math.max(v.scale / 1.25, fit.scale * 0.7) }))} aria-label="축소">−</button>
       </div>
       {!(step === 'walls' && wallStart) && <button className={`pan-toggle ${panMode ? 'active' : ''}`} onClick={() => setPanMode((active) => !active)} aria-pressed={panMode} aria-label="도면 이동 모드">
         <Hand size={19} /><span>{panMode ? '이동 중' : '도면 이동'}</span>
@@ -468,7 +547,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
             <button className="create-door-button" onClick={() => commitDraft('door')}>문</button>
             <button className="create-window-button" onClick={() => commitDraft('window')}>창문</button>
             <button className="create-sliding-button" onClick={() => commitDraft('sliding')}>슬라이딩 도어</button>
-            <button className="create-balcony-button" onClick={() => commitDraft('balcony')}>베란다 문</button>
+            <button className="create-balcony-button" onClick={() => commitDraft('balcony')}>베란다 창</button>
           </>}
           <button className="cancel-wall-button" onClick={() => { setWallStart(undefined); setWallEnd(undefined) }}>선택 취소</button>
         </div>
@@ -485,13 +564,23 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
       )}
       {selectedOpeningId && (
         <div className="selection-popover">
-          <span><b>{selectedOpening?.detectedClass ?? (selectedOpening?.type === 'window' ? '창문' : selectedOpening?.doorKind === 'sliding' ? '슬라이딩 도어' : selectedOpening?.doorKind === 'balcony' ? '베란다 문' : '문')} {selectedOpening?.confidence == null ? '' : `${Math.round(selectedOpening.confidence * 100)}% `}{selectedOpening?.detected !== false ? '후보' : ''}</b><small>{selectedOpening?.detected !== false ? 'AI 자동 인식 결과' : '직접 추가한 요소'}</small></span>
+          <span><b>{selectedOpening?.detectedClass ?? (selectedOpening?.type === 'window' ? '창문' : selectedOpening?.doorKind === 'sliding' ? '슬라이딩 도어' : selectedOpening?.doorKind === 'balcony' ? '베란다 창' : '문')} {selectedOpening?.confidence == null ? '' : `${Math.round(selectedOpening.confidence * 100)}% `}{selectedOpening?.detected !== false ? '후보' : ''}</b><small>{selectedOpening?.detected !== false ? 'AI 자동 인식 결과' : '직접 추가한 요소'}</small></span>
           <button onClick={() => { deleteOpening(selectedOpeningId); setSelectedOpeningId(undefined) }}>제거</button>
         </div>
       )}
       {step === 'furniture' && selectedFurnitureId && selectedFurniture && (
         <div className="selection-popover furniture-selection">
           <div className="furniture-inspector-copy"><b>{selectedFurniture.name}</b><small>방향키 10mm · Shift 1mm</small></div>
+          <div className="furniture-direct-actions" aria-label="선택 가구 직접 조작">
+            <button className={`neutral planar-handle ${furnitureDragging ? 'active' : ''}`} onPointerDown={startFurnitureDrag}><Move size={18} /><span>평면 이동</span></button>
+            <button className="neutral" onClick={() => {
+              const rotated = { ...selectedFurniture, rotationDeg: (selectedFurniture.rotationDeg + 90) % 360 }
+              updateFurniture(selectedFurnitureId, { rotationDeg: rotated.rotationDeg, position: snapFurnitureToWalls(rotated, selectedFurniture.position, project.walls) })
+            }}><RotateCw size={18} /><span>90° 회전</span></button>
+            <button onClick={() => { deleteFurniture(selectedFurnitureId); setSelectedFurnitureId(undefined) }}><Trash2 size={18} /><span>제거</span></button>
+            <button className={`neutral ${showFurnitureProperties ? 'active' : ''}`} aria-expanded={showFurnitureProperties} onClick={() => setShowFurnitureProperties((open) => !open)}><SlidersHorizontal size={18} /><span>속성</span></button>
+          </div>
+          {showFurnitureProperties && <div className="furniture-properties">
           <div className="furniture-size-fields">
             {([['widthMm', '가로'], ['depthMm', '세로'], ['heightMm', '높이']] as const).map(([key, label]) => <label key={key}>
               <span>{label}</span>
@@ -508,13 +597,9 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
             <details className="rgb-details compact"><summary>RGB</summary><input type="color" value={selectedFurniture.color} onChange={(event) => updateFurniture(selectedFurnitureId, { color: event.target.value })} /></details>
           </div>
           <div className="furniture-inspector-actions">
-            <button className="neutral" onClick={() => {
-              const rotated = { ...selectedFurniture, rotationDeg: (selectedFurniture.rotationDeg + 90) % 360 }
-              updateFurniture(selectedFurnitureId, { rotationDeg: rotated.rotationDeg, position: snapFurnitureToWalls(rotated, selectedFurniture.position, project.walls) })
-            }}>↻ 90°</button>
-            <button className="neutral" onClick={() => duplicateFurniture(selectedFurnitureId)}>복제</button>
-            <button onClick={() => { deleteFurniture(selectedFurnitureId); setSelectedFurnitureId(undefined) }}>삭제</button>
+            <button className="neutral" onClick={() => duplicateFurniture(selectedFurnitureId)}><Copy size={14} /> 복제</button>
           </div>
+          </div>}
         </div>
       )}
     </div>

@@ -114,3 +114,21 @@ export async function urlToFloorPlan(url: string, name: string): Promise<FloorPl
   const blob = await response.blob()
   return fileToFloorPlan(new File([blob], name, { type: blob.type || 'image/png' }))
 }
+
+export async function cropFloorPlan(
+  floorPlan: FloorPlanImage,
+  crop: { x: number; y: number; width: number; height: number },
+): Promise<FloorPlanImage> {
+  const image = await loadImage(floorPlan.dataUrl)
+  const sx = Math.max(0, Math.round(crop.x * floorPlan.widthPx))
+  const sy = Math.max(0, Math.round(crop.y * floorPlan.heightPx))
+  const widthPx = Math.max(1, Math.min(floorPlan.widthPx - sx, Math.round(crop.width * floorPlan.widthPx)))
+  const heightPx = Math.max(1, Math.min(floorPlan.heightPx - sy, Math.round(crop.height * floorPlan.heightPx)))
+  const canvas = document.createElement('canvas')
+  canvas.width = widthPx
+  canvas.height = heightPx
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('이미지를 자를 수 없어요.')
+  context.drawImage(image, sx, sy, widthPx, heightPx, 0, 0, widthPx, heightPx)
+  return { ...floorPlan, dataUrl: canvas.toDataURL('image/png'), widthPx, heightPx }
+}

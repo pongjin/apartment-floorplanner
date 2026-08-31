@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ComponentRef, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { ContactShadows, Grid, Html, OrbitControls } from '@react-three/drei'
-import { Box, Hand, Move, MoveVertical, RotateCcw, RotateCw, Share2, Trash2 } from 'lucide-react'
+import { Box, Hand, Move, MoveVertical, RotateCcw, RotateCw, Share2, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { MOUSE, TOUCH } from 'three'
 import { useProjectStore } from '../store/projectStore'
 import { furnitureColors } from '../lib/furniturePresets'
@@ -135,7 +135,7 @@ function Opening3D({ opening, walls, center }: { opening: Opening; walls: Wall[]
   const height = meter(opening.heightMm ?? (opening.type === 'door' ? 2100 : 1200))
   const sill = meter(opening.type === 'window' ? (opening.sillHeightMm ?? 900) : 0)
 
-  if (opening.type === 'window') return <group position={origin} rotation={[0, rotation, 0]}>
+  if (opening.type === 'window' && !opening.doorKind) return <group position={origin} rotation={[0, rotation, 0]}>
     <GlassPanel width={width * .96} height={height * .92} position={[0, sill + height / 2, 0]} />
     <OpeningFrame width={width} height={height} sill={sill} />
     <BoxMesh size={[.04, height, .08]} position={[0, sill + height / 2, 0]} color="#667975" />
@@ -286,6 +286,7 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
   const setCamera3D = useProjectStore((state) => state.setCamera3D)
   const [resetKey, setResetKey] = useState(0)
   const [selectedFurnitureId, setSelectedFurnitureId] = useState<string>()
+  const [showFurnitureProperties, setShowFurnitureProperties] = useState(false)
   const [axisDragging, setAxisDragging] = useState(false)
   const [cameraMode, setCameraMode] = useState<'orbit' | 'pan'>(() =>
     window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 620 ? 'pan' : 'orbit')
@@ -293,6 +294,7 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
   const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null)
   const resolvedOpenings = useMemo(() => resolveOpenings(project.openings, project.walls), [project.openings, project.walls])
   const selectedFurniture = project.furniture.find((item) => item.id === selectedFurnitureId)
+  useEffect(() => setShowFurnitureProperties(false), [selectedFurnitureId])
   const startPlanarDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (!selectedFurniture) return
     event.preventDefault()
@@ -300,21 +302,22 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
     setAxisDragging(true)
     const furnitureId = selectedFurniture.id
     const original = selectedFurniture.position
-    let lastPointer: { x: number; y: number } | undefined
-    let accumulated = { x: 0, y: 0 }
+    const startPointer = { x: event.clientX, y: event.clientY }
+    const controls = controlsRef.current
+    controls?.object.updateMatrixWorld()
+    const matrix = controls?.object.matrixWorld.elements
+    const rightLength = Math.hypot(matrix?.[0] ?? 1, matrix?.[2] ?? 0) || 1
+    const upLength = Math.hypot(matrix?.[4] ?? 0, matrix?.[6] ?? 1) || 1
+    const right = { x: (matrix?.[0] ?? 1) / rightLength, y: (matrix?.[2] ?? 0) / rightLength }
+    const down = { x: -(matrix?.[4] ?? 0) / upLength, y: -(matrix?.[6] ?? 1) / upLength }
+    const cameraDistance = controls ? controls.object.position.distanceTo(controls.target) : 6
+    const millimetersPerPixel = Math.max(2, cameraDistance * 1.7)
     const move = (pointerEvent: PointerEvent) => {
-      if (!lastPointer) {
-        lastPointer = { x: pointerEvent.clientX, y: pointerEvent.clientY }
-        return
-      }
-      accumulated = {
-        x: accumulated.x + Math.max(-50, Math.min(50, pointerEvent.clientX - lastPointer.x)),
-        y: accumulated.y + Math.max(-50, Math.min(50, pointerEvent.clientY - lastPointer.y)),
-      }
-      lastPointer = { x: pointerEvent.clientX, y: pointerEvent.clientY }
+      const dx = pointerEvent.clientX - startPointer.x
+      const dy = pointerEvent.clientY - startPointer.y
       updateFurniture(furnitureId, { position: {
-        x: Math.round(original.x + accumulated.x * 10),
-        y: Math.round(original.y + accumulated.y * 10),
+        x: Math.round(original.x + (right.x * dx + down.x * dy) * millimetersPerPixel),
+        y: Math.round(original.y + (right.y * dx + down.y * dy) * millimetersPerPixel),
       } })
     }
     const end = () => {
@@ -403,6 +406,7 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
           <button className="axis-control" onPointerDown={startVerticalDrag} title="누른 채 3D 높이 조절"><MoveVertical size={23} /><span>높이 이동</span></button>
           <button onClick={() => updateFurniture(selectedFurniture.id, { rotationDeg: (selectedFurniture.rotationDeg + 90) % 360 })} title="90도 회전"><RotateCw size={22} /><span>90° 회전</span></button>
           <button className="remove-control" onClick={() => { deleteFurniture(selectedFurniture.id); setSelectedFurnitureId(undefined) }} title="가구 제거"><Trash2 size={21} /><span>제거</span></button>
+          <button className={`properties-control ${showFurnitureProperties ? 'active' : ''}`} aria-expanded={showFurnitureProperties} onClick={() => setShowFurnitureProperties((open) => !open)} title="세부 속성"><SlidersHorizontal size={21} /><span>속성</span></button>
         </div>
       </Html>}
       <Grid args={[Math.ceil(width + 4), Math.ceil(depth + 4)]} position={[0, -.061, 0]} cellSize={.5} cellThickness={.6} cellColor="#a8aaa3" sectionSize={2} sectionThickness={1} sectionColor="#858b84" fadeDistance={30} infiniteGrid />
@@ -434,7 +438,7 @@ export function Preview3D({ exportMode = false }: { exportMode?: boolean }) {
     </div>
     {!!project.furniture.length && <div className="preview3d-object-list"><span>가구 선택</span>{project.furniture.map((item) => <button key={item.id} className={item.id === selectedFurnitureId ? 'active' : ''} onClick={() => setSelectedFurnitureId(item.id)}>{item.name}</button>)}</div>}
     {!exportMode && <div className="preview3d-legend"><b>3D 미리보기</b><span>{cameraMode === 'pan' ? '한 손가락 이동 · 두 손가락 확대' : '한 손가락 회전 · 두 손가락 확대/이동'}</span><small>프리셋은 치수 기반 간소화 모델입니다.</small></div>}
-    {selectedFurniture && <aside className="preview3d-inspector">
+    {selectedFurniture && showFurnitureProperties && <aside className="preview3d-inspector">
       <div className="preview3d-inspector-head"><div><b>{selectedFurniture.name}</b><span>3D에서 위치와 색상 수정</span></div><button onClick={() => setSelectedFurnitureId(undefined)}>×</button></div>
       <div className="preview3d-position-fields">
         <label><span>가로 위치 X</span><div><input type="number" step="10" value={Math.round(selectedFurniture.position.x)} onChange={(event) => updateFurniture(selectedFurniture.id, { position: { ...selectedFurniture.position, x: Number(event.target.value) || 0 } })} /><i>mm</i></div></label>
