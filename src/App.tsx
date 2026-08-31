@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle2, Home, Info, RotateCcw, Ruler, ScanLine, Sparkles, Trash2, Undo2, Upload, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronLeft, ChevronRight, Home, Info, RotateCcw, Ruler, ScanLine, Sparkles, Trash2, Undo2, Upload, XCircle } from 'lucide-react'
 import { FloorPlanStage } from './components/FloorPlanStage'
 import { FloorPlanCropper } from './components/FloorPlanCropper'
 import { FurnitureLibrary } from './components/FurnitureLibrary'
@@ -28,7 +28,8 @@ export default function App() {
   const setCalibration = useProjectStore((s) => s.setCalibration)
   const setActiveStep = useProjectStore((s) => s.setActiveStep)
   const clearWalls = useProjectStore((s) => s.clearWalls)
-  const undoLastWall = useProjectStore((s) => s.undoLastWall)
+  const undoLastUserAction = useProjectStore((s) => s.undoLastUserAction)
+  const canUndoWallAction = useProjectStore((s) => s.canUndoWallAction)
   const setDetectedLayout = useProjectStore((s) => s.setDetectedLayout)
   const resetProject = useProjectStore((s) => s.resetProject)
   const [calibrationPoints, setCalibrationPoints] = useState<PointPx[]>([])
@@ -42,6 +43,13 @@ export default function App() {
   const [showScaleGuide, setShowScaleGuide] = useState(false)
   const step = project.viewState.activeStep
   const copy = guidance[step]
+  const stepNavigation = step === 'walls'
+    ? { previous: 'scale' as const, next: 'furniture' as const, nextDisabled: !project.walls.length }
+    : step === 'furniture'
+      ? { previous: 'walls' as const, next: 'preview3d' as const, nextDisabled: false }
+      : step === 'preview3d'
+        ? { previous: 'furniture' as const, next: 'export' as const, nextDisabled: false }
+        : undefined
 
   useEffect(() => { void hydrate() }, [hydrate])
   useEffect(() => {
@@ -150,7 +158,13 @@ export default function App() {
       <section className="workspace">
         <div className="workspace-heading">
           <div><span>{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.body}</p></div>
-          {step === 'walls' && <div className="wall-count"><b>{project.walls.length}</b><span>벽 · 개구부 {project.openings.length}</span></div>}
+          <div className="workspace-heading-tools">
+            {step === 'walls' && <div className="wall-count"><b>{project.walls.length}</b><span>벽 · 개구부 {project.openings.length}</span></div>}
+            {stepNavigation && <div className="step-navigation" aria-label="단계 이동">
+              <button className="previous" onClick={() => setActiveStep(stepNavigation.previous)}><ChevronLeft size={16} /> 이전</button>
+              <button className="next" disabled={stepNavigation.nextDisabled} onClick={() => setActiveStep(stepNavigation.next)}>다음 <ChevronRight size={16} /></button>
+            </div>}
+          </div>
         </div>
 
         {step === 'upload' ? (
@@ -209,10 +223,9 @@ export default function App() {
       {step === 'walls' && (
         <aside className="bottom-toolbar">
           <button className="danger-tool" onClick={() => project.walls.length && window.confirm('그린 벽을 모두 지울까요?') && clearWalls()} disabled={!project.walls.length}><Trash2 size={18} /><span>전체 삭제</span></button>
-          <button className="undo-tool" onClick={undoLastWall} disabled={!project.walls.length}><Undo2 size={19} /><span>한 단계 취소</span></button>
+          <button className="undo-tool" onClick={undoLastUserAction} disabled={!canUndoWallAction}><Undo2 size={19} /><span>한 단계 취소</span></button>
           <button className="detect-tool" onClick={() => void autoDetect()} disabled={detecting}><ScanLine size={19} /><span>{detecting ? '인식 중…' : '자동 인식'}</span></button>
           <div className="wall-tip"><span className="tip-dot" /><p><b>새 벽 그리기</b><br />두 점 선택 후 생성</p></div>
-          <button className="next-button" onClick={() => setActiveStep('furniture')} disabled={!project.walls.length}>다음</button>
         </aside>
       )}
     </main>

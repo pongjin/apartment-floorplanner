@@ -336,17 +336,6 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
                 opacity={step === 'walls' ? 0.72 : 1}
               />
             )}
-            {step === 'walls' && project.calibration && (() => {
-              const inverseScale = 1 / view.scale
-              const oneMeterPx = 1000 / project.calibration.mmPerPixel
-              const panelWidth = Math.max(oneMeterPx + 16 * inverseScale, 132 * inverseScale)
-              return <Group x={14 * inverseScale} y={14 * inverseScale} listening={false}>
-                <Rect width={panelWidth} height={40 * inverseScale} fill="#fffdf8" opacity={.92} cornerRadius={8 * inverseScale} shadowColor="#17352e" shadowOpacity={.12} shadowBlur={8 * inverseScale} />
-                <Line points={[8 * inverseScale, 15 * inverseScale, 8 * inverseScale + oneMeterPx, 15 * inverseScale]} stroke="#19a56b" strokeWidth={2 * inverseScale} />
-                <Line points={[8 * inverseScale, 10 * inverseScale, 8 * inverseScale, 20 * inverseScale, 8 * inverseScale + oneMeterPx, 20 * inverseScale, 8 * inverseScale + oneMeterPx, 10 * inverseScale]} stroke="#19a56b" strokeWidth={2 * inverseScale} />
-                <Text x={8 * inverseScale} y={24 * inverseScale} width={panelWidth - 16 * inverseScale} text={`1 m 기준 · ${project.calibration.mmPerPixel.toFixed(2)} mm/px`} fontSize={9 * inverseScale} fill="#315d50" />
-              </Group>
-            })()}
             {step === 'scale' && project.calibration && (
               <>
                 <Line points={[project.calibration.imagePointA.x, project.calibration.imagePointA.y, project.calibration.imagePointB.x, project.calibration.imagePointB.y]} stroke="#e85d3f" strokeWidth={3 / view.scale} dash={[8 / view.scale, 6 / view.scale]} />
@@ -532,6 +521,9 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
           setInteractionMode('create'); setSelectedWallId(undefined); setSelectedOpeningId(undefined); setPanMode(false)
         }}>신규 구조 생성</button>
       </div>}
+      {step === 'walls' && project.calibration && <div className="scale-reference-card" aria-label={`축척 1미터 기준 ${project.calibration.mmPerPixel.toFixed(2)} 밀리미터 퍼 픽셀`}>
+        <i><span /></i><b>1 m 기준 · {project.calibration.mmPerPixel.toFixed(2)} mm/px</b>
+      </div>}
       <div className="canvas-controls">
         <button onClick={() => setView(fit)} aria-label="화면 맞춤">맞춤</button>
         <button disabled={!panMode} title={!panMode ? '도면 이동을 먼저 눌러주세요' : undefined} onClick={() => setView((v) => ({ ...v, scale: Math.min(v.scale * 1.25, fit.scale * 6) }))} aria-label="확대">＋</button>
@@ -581,6 +573,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
             <button className={`neutral ${showFurnitureProperties ? 'active' : ''}`} aria-expanded={showFurnitureProperties} onClick={() => setShowFurnitureProperties((open) => !open)}><SlidersHorizontal size={18} /><span>속성</span></button>
           </div>
           {showFurnitureProperties && <div className="furniture-properties">
+          <h3 className="property-section-title">크기 세부 조정</h3>
           <div className="furniture-size-fields">
             {([['widthMm', '가로'], ['depthMm', '세로'], ['heightMm', '높이']] as const).map(([key, label]) => <label key={key}>
               <span>{label}</span>
@@ -592,6 +585,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
               }} /><i>mm</i></div>
             </label>)}
           </div>
+          <h3 className="property-section-title">색 변경</h3>
           <div className="selected-color-row" aria-label="가구 색상 프리셋">
             {furnitureColors.map((color) => <button key={color.value} className={selectedFurniture.color.toUpperCase() === color.value ? 'active' : ''} onClick={() => updateFurniture(selectedFurnitureId, { color: color.value })} title={color.name} aria-label={color.name}><i style={{ background: color.value }} /></button>)}
             <details className="rgb-details compact"><summary>RGB</summary><input type="color" value={selectedFurniture.color} onChange={(event) => updateFurniture(selectedFurnitureId, { color: event.target.value })} /></details>

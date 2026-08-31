@@ -19,6 +19,7 @@ const createProject = (): Project => ({
 type ProjectStore = {
   project: Project
   hydrated: boolean
+  canUndoWallAction: boolean
   hydrate: () => Promise<void>
   resetProject: () => void
   setProjectName: (name: string) => void
@@ -28,7 +29,7 @@ type ProjectStore = {
   addWall: (start: PointMm, end: PointMm) => void
   updateWall: (id: string, patch: Partial<Wall>) => void
   deleteWall: (id: string) => void
-  undoLastWall: () => void
+  undoLastUserAction: () => void
   addOpening: (wallId: string, type: OpeningType) => void
   addStandaloneOpening: (start: PointMm, end: PointMm, kind: 'door' | 'window' | 'sliding' | 'balcony') => void
   deleteOpening: (id: string) => void
@@ -42,6 +43,7 @@ type ProjectStore = {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined
+let wallActionHistory: Array<Pick<Project, 'walls' | 'openings'>> = []
 const persist = (project: Project) => {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => void projectRepository.save(project), 250)
@@ -55,9 +57,26 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
     persist(next)
   }
 
+  const clearWallActionHistory = () => {
+    wallActionHistory = []
+    set({ canUndoWallAction: false })
+  }
+
+  const mutateUserWallAction = (fn: (project: Project) => Project) => {
+    const current = get().project
+    const project = fn(current)
+    if (project === current) return
+    wallActionHistory.push({ walls: current.walls, openings: current.openings })
+    if (wallActionHistory.length > 50) wallActionHistory.shift()
+    const next = { ...project, updatedAt: now() }
+    set({ project: next, canUndoWallAction: true })
+    persist(next)
+  }
+
   return {
     project: createProject(),
     hydrated: false,
+    canUndoWallAction: false,
     hydrate: async () => {
       const saved = await projectRepository.getLatest()
       const normalized = saved ? {
@@ -66,48 +85,54 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
           ? { ...opening, type: 'window' as const, doorKind: undefined }
           : opening),
       } : get().project
-      set({ project: normalized, hydrated: true })
+      wallActionHistory = []
+      set({ project: normalized, hydrated: true, canUndoWallAction: false })
     },
     resetProject: () => {
       const project = createProject()
-      set({ project })
+      wallActionHistory = []
+      set({ project, canUndoWallAction: false })
       persist(project)
     },
     setProjectName: (name) => mutate((p) => ({ ...p, name })),
-    setFloorPlanImage: (floorPlanImage) => mutate((p) => ({
-      ...p,
-      floorPlanImage,
-      calibration: undefined,
-      walls: [],
-      openings: [],
-      viewState: { ...p.viewState, activeStep: 'scale' },
-    })),
-    setCalibration: (calibration) => mutate((p) => ({
-      ...p,
-      calibration,
-      viewState: { ...p.viewState, activeStep: 'walls' },
-    })),
+    setFloorPlanImage: (floorPlanImage) => {
+      clearWallActionHistory()
+      mutate((p) => ({
+        ...p,
+        floorPlanImage,
+        calibration: undefined,
+        walls: [],
+        openings: [],
+        viewState: { ...p.viewState, activeStep: 'scale' },
+      }))
+    },
+    setCalibration: (calibration) => {
+      clearWallActionHistory()
+      mutate((p) => ({
+        ...p,
+        calibration,
+        viewState: { ...p.viewState, activeStep: 'walls' },
+      }))
+    },
     setActiveStep: (activeStep) => mutate((p) => ({ ...p, viewState: { ...p.viewState, activeStep } })),
-    addWall: (start, end) => mutate((p) => ({
+    addWall: (start, end) => mutateUserWallAction((p) => ({
       ...p,
       walls: [...p.walls, { id: nanoid(), start, end, thicknessMm: 150, heightMm: 2400 } satisfies Wall],
     })),
-    updateWall: (id, patch) => mutate((p) => ({ ...p, walls: p.walls.map((wall) => wall.id === id ? { ...wall, ...patch } : wall) })),
-    deleteWall: (id) => mutate((p) => ({
+    updateWall: (id, patch) => mutateUserWallAction((p) => ({ ...p, walls: p.walls.map((wall) => wall.id === id ? { ...wall, ...patch } : wall) })),
+    deleteWall: (id) => mutateUserWallAction((p) => ({
       ...p,
       walls: p.walls.filter((wall) => wall.id !== id),
       openings: p.openings.filter((opening) => opening.wallId !== id),
     })),
-    undoLastWall: () => mutate((p) => {
-      const lastWall = p.walls[p.walls.length - 1]
-      if (!lastWall) return p
-      return {
-        ...p,
-        walls: p.walls.slice(0, -1),
-        openings: p.openings.filter((opening) => opening.wallId !== lastWall.id),
-      }
-    }),
-    addOpening: (wallId, type) => mutate((p) => {
+    undoLastUserAction: () => {
+      const previous = wallActionHistory.pop()
+      if (!previous) return
+      const next = { ...get().project, ...previous, updatedAt: now() }
+      set({ project: next, canUndoWallAction: wallActionHistory.length > 0 })
+      persist(next)
+    },
+    addOpening: (wallId, type) => mutateUserWallAction((p) => {
       const wall = p.walls.find((item) => item.id === wallId)
       if (!wall) return p
       const length = Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y)
@@ -122,7 +147,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
         }],
       }
     }),
-    addStandaloneOpening: (start, end, kind) => mutate((p) => {
+    addStandaloneOpening: (start, end, kind) => mutateUserWallAction((p) => {
       const widthMm = Math.hypot(end.x - start.x, end.y - start.y)
       if (widthMm < 100) return p
       const type: OpeningType = kind === 'window' ? 'window' : 'door'
@@ -137,9 +162,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
         }],
       }
     }),
-    deleteOpening: (id) => mutate((p) => ({ ...p, openings: p.openings.filter((opening) => opening.id !== id) })),
-    setDetectedLayout: (walls, openings) => mutate((p) => ({ ...p, walls, openings })),
-    clearWalls: () => mutate((p) => ({ ...p, walls: [], openings: [] })),
+    deleteOpening: (id) => mutateUserWallAction((p) => ({ ...p, openings: p.openings.filter((opening) => opening.id !== id) })),
+    setDetectedLayout: (walls, openings) => {
+      clearWallActionHistory()
+      mutate((p) => ({ ...p, walls, openings }))
+    },
+    clearWalls: () => mutateUserWallAction((p) => ({ ...p, walls: [], openings: [] })),
     addFurniture: (item) => mutate((p) => {
       const points = p.walls.flatMap((wall) => [wall.start, wall.end])
       const center = points.length ? {
