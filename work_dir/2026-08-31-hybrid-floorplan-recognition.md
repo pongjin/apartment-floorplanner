@@ -37,7 +37,10 @@
 
 ## 배포
 
-기능 브랜치에서 검증 후 `main`에 fast-forward 반영하고 GitHub push하여 Vercel Production 자동 배포 대상으로 만든다. 배포 후 고정 도메인과 모델·WASM URL의 응답을 확인한다.
+- 기능 브랜치 `feat/hybrid-floorplan-detection`과 `main`에 구현 커밋 `11a1362`를 push
+- Vercel 빌드 상태는 성공했지만 동일 SHA를 기능 브랜치에 먼저 push해 Preview 배포가 먼저 생성되었고, 고정 Production 도메인은 이전 번들을 유지하는 현상 확인
+- 이 작업 기록 갱신 커밋을 `main` 전용 새 SHA로 push해 Production 배포를 다시 트리거
+- 배포 완료 후 고정 도메인의 번들 해시와 ONNX·MJS·WASM 정적 자산 응답을 재검증
 
 ## 남은 한계
 
