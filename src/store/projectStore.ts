@@ -62,7 +62,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
       const saved = await projectRepository.getLatest()
       const normalized = saved ? {
         ...saved,
-        openings: saved.openings.map((opening) => opening.detected && opening.doorKind === 'sliding'
+        openings: saved.openings.map((opening) => opening.detected && opening.doorKind === 'sliding' && !opening.detectedClass
           ? { ...opening, type: 'window' as const, doorKind: undefined }
           : opening),
       } : get().project

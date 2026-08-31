@@ -1,6 +1,6 @@
 # 배포 및 운영 인수인계
 
-최종 갱신: 2026-08-29
+최종 갱신: 2026-08-31
 
 ## 운영 주소
 
@@ -89,6 +89,15 @@ curl -I https://apartment-floorplanner.vercel.app
 - Vercel 배포 간 데이터베이스 마이그레이션은 필요하지 않습니다.
 - 도메인이 바뀌면 브라우저 origin이 달라져 기존 IndexedDB 데이터가 보이지 않으므로 고정 Production 도메인을 사용합니다.
 - `.env.local`에 생성될 수 있는 Vercel OIDC 정보는 외부 공유나 Git 커밋 대상이 아닙니다.
+
+## 하이브리드 인식 정적 자산
+
+- `/models/hybrid-floorplan-lraspp-v1.onnx`: 약 13.1MB 브라우저 추론 모델
+- `/ort/ort-wasm-simd-threaded.wasm`: 약 11.2MB ONNX WASM 런타임
+- `/ort/ort-wasm-simd-threaded.mjs`: ONNX WASM 동적 로더
+- 자동 인식 코드는 동적 import로 분리되어 자동 인식 버튼을 누르기 전에는 로드하지 않습니다.
+- 두 파일은 Vercel 정적 자산으로 제공되며 서버 함수·GPU·환경변수를 사용하지 않습니다.
+- 배포 후 세 URL의 HTTP 200과 WASM `application/wasm` Content-Type을 확인합니다.
 
 ## 롤백
 

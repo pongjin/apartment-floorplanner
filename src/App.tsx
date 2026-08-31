@@ -5,7 +5,6 @@ import { FurnitureLibrary } from './components/FurnitureLibrary'
 import { Preview3D } from './components/Preview3D'
 import { StepBar } from './components/StepBar'
 import { distance } from './lib/geometry'
-import { detectFloorPlan } from './lib/floorPlanDetection'
 import { fileToFloorPlan, inspectFloorPlanQuality, urlToFloorPlan, type FloorPlanQuality } from './hooks/useImageUpload'
 import { useProjectStore } from './store/projectStore'
 import type { PointPx, ScaleCalibration } from './types/project'
@@ -106,10 +105,11 @@ export default function App() {
       setDetecting(true)
       setError('')
       setNotice('')
+      const { detectFloorPlan } = await import('./lib/floorPlanDetection')
       const result = await detectFloorPlan(project.floorPlanImage, project.calibration)
       if (!result.walls.length) throw new Error('굵은 벽선을 찾지 못했어요. 수동 그리기를 이용해 주세요.')
       setDetectedLayout(result.walls, result.openings)
-      setNotice(`벽 ${result.summary.wallCount}개 · 문 ${result.summary.doorCount}개 · 창 ${result.summary.windowCount}개 후보를 찾았어요.`)
+      setNotice(`하이브리드 AI가 벽 ${result.summary.wallCount}개 · 문 ${result.summary.doorCount}개 · 창 ${result.summary.windowCount}개 후보를 찾았어요.`)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '도면 자동 인식에 실패했어요.')
     } finally {

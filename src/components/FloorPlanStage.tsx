@@ -343,7 +343,8 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
               const selected = opening.id === selectedOpeningId
               const detected = opening.detected !== false
               const detectedColor = opening.type === 'window' ? '#2585ad' : '#df4f36'
-              const openingLabel = opening.type === 'window' ? '창' : opening.doorKind === 'sliding' ? '슬라이딩 도어' : opening.doorKind === 'balcony' ? '베란다 문' : '문'
+              const openingLabel = opening.detectedClass ?? (opening.type === 'window' ? '창' : opening.doorKind === 'sliding' ? '슬라이딩 도어' : opening.doorKind === 'balcony' ? '베란다 문' : '문')
+              const confidenceLabel = opening.confidence == null ? '' : ` ${Math.round(opening.confidence * 100)}%`
               const dx = openingEnd.x - openingStart.x
               const dy = openingEnd.y - openingStart.y
               const pixelLength = Math.hypot(dx, dy) || 1
@@ -379,7 +380,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
                   x={(openingStart.x + openingEnd.x) / 2 - 38 / view.scale}
                   y={(openingStart.y + openingEnd.y) / 2 + 5 / view.scale}
                   width={76 / view.scale} align="center"
-                  text={`${openingLabel}${detected ? ' 후보' : ''}`}
+                  text={`${openingLabel}${confidenceLabel}${detected ? ' 후보' : ''}`}
                   fontSize={10 / view.scale} fontStyle="bold"
                   fill={detected ? detectedColor : opening.type === 'door' ? '#b86425' : '#28748c'}
                 />
@@ -484,7 +485,7 @@ export function FloorPlanStage({ calibrationPoints, setCalibrationPoints }: Prop
       )}
       {selectedOpeningId && (
         <div className="selection-popover">
-          <span><b>{selectedOpening?.type === 'window' ? '창문' : selectedOpening?.doorKind === 'sliding' ? '슬라이딩 도어' : selectedOpening?.doorKind === 'balcony' ? '베란다 문' : '문'} {selectedOpening?.detected !== false ? '후보' : ''}</b><small>{selectedOpening?.detected !== false ? '자동 인식 결과' : '직접 추가한 요소'}</small></span>
+          <span><b>{selectedOpening?.detectedClass ?? (selectedOpening?.type === 'window' ? '창문' : selectedOpening?.doorKind === 'sliding' ? '슬라이딩 도어' : selectedOpening?.doorKind === 'balcony' ? '베란다 문' : '문')} {selectedOpening?.confidence == null ? '' : `${Math.round(selectedOpening.confidence * 100)}% `}{selectedOpening?.detected !== false ? '후보' : ''}</b><small>{selectedOpening?.detected !== false ? 'AI 자동 인식 결과' : '직접 추가한 요소'}</small></span>
           <button onClick={() => { deleteOpening(selectedOpeningId); setSelectedOpeningId(undefined) }}>제거</button>
         </div>
       )}

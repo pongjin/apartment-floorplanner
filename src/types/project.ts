@@ -38,6 +38,8 @@ export interface Opening {
   heightMm?: number
   sillHeightMm?: number
   detected?: boolean
+  confidence?: number
+  detectedClass?: string
   doorKind?: 'swing' | 'sliding' | 'balcony'
   start?: PointMm
   end?: PointMm

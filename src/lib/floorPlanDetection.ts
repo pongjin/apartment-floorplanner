@@ -1,21 +1,28 @@
 import { nanoid } from 'nanoid'
+import * as ort from 'onnxruntime-web/wasm'
+import { detectFloorPlan as detectFloorPlanHeuristic } from '../legacy/floorPlanDetectionHeuristic'
 import type { FloorPlanImage, Opening, ScaleCalibration, Wall } from '../types/project'
+
+export { detectFloorPlan as detectFloorPlanLegacy } from '../legacy/floorPlanDetectionHeuristic'
 
 type Axis = 'horizontal' | 'vertical'
 
-type PixelOpening = {
-  offsetPx: number
-  widthPx: number
-  kind?: 'swing' | 'window'
+type DetectionComponent = {
+  classId: number
+  confidence: number
+  x: number
+  y: number
+  width: number
+  height: number
+  area: number
 }
 
-type PixelLine = {
+type WallSegment = {
+  wall: Wall
   axis: Axis
   coordinate: number
   start: number
   end: number
-  thickness: number
-  openings: PixelOpening[]
 }
 
 export type DetectionResult = {
@@ -28,6 +35,36 @@ export type DetectionResult = {
   }
 }
 
+const MODEL_URL = '/models/hybrid-floorplan-lraspp-v1.onnx'
+const MODEL_WIDTH = 640
+const MODEL_HEIGHT = 480
+const MODEL_CLASSES = 9
+const CONFIDENCE_THRESHOLD = .5
+const MINIMUM_COMPONENT_AREA = 30
+
+const classMetadata: Record<number, { name: string; group: 'door' | 'window'; doorKind?: 'swing' | 'sliding' }> = {
+  3: { name: '여닫이문', group: 'door', doorKind: 'swing' },
+  4: { name: '미닫이문', group: 'door', doorKind: 'sliding' },
+  5: { name: '기타문', group: 'door' },
+  6: { name: '여닫이창', group: 'window' },
+  7: { name: '미닫이창', group: 'window' },
+  8: { name: '기타창', group: 'window' },
+}
+
+let sessionPromise: Promise<ort.InferenceSession> | undefined
+
+function getSession() {
+  if (!sessionPromise) {
+    ort.env.wasm.numThreads = 1
+    ort.env.wasm.wasmPaths = '/ort/'
+    sessionPromise = ort.InferenceSession.create(MODEL_URL, {
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all',
+    })
+  }
+  return sessionPromise
+}
+
 const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
   const image = new Image()
   image.onload = () => resolve(image)
@@ -35,447 +72,247 @@ const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, rejec
   image.src = src
 })
 
-function luminanceMask(data: Uint8ClampedArray, width: number, height: number, threshold: number) {
-  const mask = new Uint8Array(width * height)
-  for (let index = 0; index < mask.length; index += 1) {
-    const offset = index * 4
-    const luminance = data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114
-    mask[index] = data[offset + 3] > 80 && luminance < threshold ? 1 : 0
-  }
-  return mask
-}
-
-type PixelBounds = { left: number; top: number; right: number; bottom: number }
-
-function findBands(values: number[], minimumInk: number, maximumGap: number) {
-  const bands: { start: number; end: number; ink: number }[] = []
-  let start = -1
-  let lastActive = -1
-  let ink = 0
-  values.forEach((value, index) => {
-    if (value >= minimumInk) {
-      if (start < 0) start = index
-      lastActive = index
-      ink += value
-    }
-    if (start >= 0 && index - lastActive > maximumGap) {
-      bands.push({ start, end: lastActive, ink })
-      start = -1
-      lastActive = -1
-      ink = 0
-    }
-  })
-  if (start >= 0) bands.push({ start, end: lastActive, ink })
-  return bands
-}
-
-function mergeNearbyBands(bands: { start: number; end: number; ink: number }[], totalLength: number) {
-  if (!bands.length) return undefined
-  const minimumSeedHeight = totalLength * .16
-  const seed = [...bands].sort((a, b) => {
-    const aScore = a.ink * Math.min(1, (a.end - a.start + 1) / minimumSeedHeight)
-    const bScore = b.ink * Math.min(1, (b.end - b.start + 1) / minimumSeedHeight)
-    return bScore - aScore
-  })[0]
-  let start = seed.start
-  let end = seed.end
-  let changed = true
-  const mergeDistance = Math.max(4, totalLength * .12)
-  while (changed) {
-    changed = false
-    for (const band of bands) {
-      const gap = band.end < start ? start - band.end : band.start > end ? band.start - end : 0
-      if (gap <= mergeDistance && (band.end - band.start + 1 >= totalLength * .012 || band.ink >= seed.ink * .015)) {
-        const nextStart = Math.min(start, band.start)
-        const nextEnd = Math.max(end, band.end)
-        if (nextStart !== start || nextEnd !== end) changed = true
-        start = nextStart
-        end = nextEnd
-      }
+function prepareTensor(image: HTMLImageElement) {
+  const scale = Math.min(MODEL_WIDTH / image.naturalWidth, MODEL_HEIGHT / image.naturalHeight)
+  const resizedWidth = Math.round(image.naturalWidth * scale)
+  const resizedHeight = Math.round(image.naturalHeight * scale)
+  const padX = Math.floor((MODEL_WIDTH - resizedWidth) / 2)
+  const padY = Math.floor((MODEL_HEIGHT - resizedHeight) / 2)
+  const canvas = document.createElement('canvas')
+  canvas.width = MODEL_WIDTH
+  canvas.height = MODEL_HEIGHT
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) throw new Error('AI 입력 이미지를 준비할 수 없어요.')
+  context.fillStyle = '#fff'
+  context.fillRect(0, 0, MODEL_WIDTH, MODEL_HEIGHT)
+  context.drawImage(image, padX, padY, resizedWidth, resizedHeight)
+  const pixels = context.getImageData(0, 0, MODEL_WIDTH, MODEL_HEIGHT).data
+  const planeSize = MODEL_WIDTH * MODEL_HEIGHT
+  const tensor = new Float32Array(planeSize * 3)
+  const mean = [.485, .456, .406]
+  const deviation = [.229, .224, .225]
+  for (let index = 0; index < planeSize; index += 1) {
+    const source = index * 4
+    for (let channel = 0; channel < 3; channel += 1) {
+      tensor[channel * planeSize + index] = (pixels[source + channel] / 255 - mean[channel]) / deviation[channel]
     }
   }
-  return { start, end }
-}
-
-function findDrawingBounds(mask: Uint8Array, width: number, height: number): PixelBounds {
-  const rowInk = Array.from({ length: height }, (_, y) => {
-    let count = 0
-    for (let x = 0; x < width; x += 1) count += mask[y * width + x]
-    return count
-  })
-  const rowBands = findBands(rowInk, Math.max(2, Math.round(width * .008)), Math.max(2, Math.round(height * .025)))
-  const rowBand = mergeNearbyBands(rowBands, height)
-  if (!rowBand) return { left: 0, top: 0, right: width - 1, bottom: height - 1 }
-
-  const columnInk = Array.from({ length: width }, (_, x) => {
-    let count = 0
-    for (let y = rowBand.start; y <= rowBand.end; y += 1) count += mask[y * width + x]
-    return count
-  })
-  const columnBands = findBands(columnInk, Math.max(2, Math.round((rowBand.end - rowBand.start + 1) * .008)), Math.max(2, Math.round(width * .025)))
-  const columnBand = columnBands.sort((a, b) => b.ink - a.ink)[0]
-  if (!columnBand) return { left: 0, top: rowBand.start, right: width - 1, bottom: rowBand.end }
-  const padding = Math.max(2, Math.round(Math.min(width, height) * .015))
   return {
-    left: Math.max(0, columnBand.start - padding),
-    top: Math.max(0, rowBand.start - padding),
-    right: Math.min(width - 1, columnBand.end + padding),
-    bottom: Math.min(height - 1, rowBand.end + padding),
+    tensor: new ort.Tensor('float32', tensor, [1, 3, MODEL_HEIGHT, MODEL_WIDTH]),
+    geometry: { scale, padX, padY, resizedWidth, resizedHeight },
   }
 }
 
-function restrictToBounds(mask: Uint8Array, width: number, height: number, bounds: PixelBounds) {
-  const restricted = new Uint8Array(mask.length)
-  for (let y = bounds.top; y <= bounds.bottom && y < height; y += 1) {
-    const start = y * width + bounds.left
-    restricted.set(mask.subarray(start, y * width + Math.min(width, bounds.right + 1)), start)
-  }
-  return restricted
-}
-
-function edgeMask(data: Uint8ClampedArray, width: number, height: number, bounds: PixelBounds) {
-  const luminance = new Float32Array(width * height)
-  for (let index = 0; index < luminance.length; index += 1) {
-    const offset = index * 4
-    luminance[index] = data[offset] * .299 + data[offset + 1] * .587 + data[offset + 2] * .114
-  }
-  const mask = new Uint8Array(width * height)
-  for (let y = Math.max(1, bounds.top); y < Math.min(height - 1, bounds.bottom + 1); y += 1) {
-    for (let x = Math.max(1, bounds.left); x < Math.min(width - 1, bounds.right + 1); x += 1) {
-      const index = y * width + x
-      const gradientX = Math.abs(luminance[index + 1] - luminance[index - 1])
-      const gradientY = Math.abs(luminance[index + width] - luminance[index - width])
-      if (luminance[index] < 145 || Math.max(gradientX, gradientY) > 28) mask[index] = 1
+function decodeSegmentation(logits: ort.Tensor): DetectionComponent[] {
+  const values = logits.data as Float32Array
+  const planeSize = MODEL_WIDTH * MODEL_HEIGHT
+  if (values.length !== MODEL_CLASSES * planeSize) throw new Error('AI 모델 출력 크기가 예상과 달라요.')
+  const classes = new Uint8Array(planeSize)
+  const confidence = new Float32Array(planeSize)
+  for (let index = 0; index < planeSize; index += 1) {
+    let bestClass = 0
+    let maximum = -Infinity
+    for (let classId = 0; classId < MODEL_CLASSES; classId += 1) {
+      const value = values[classId * planeSize + index]
+      if (value > maximum) {
+        maximum = value
+        bestClass = classId
+      }
     }
-  }
-  return mask
-}
-
-function isLineDrawing(data: Uint8ClampedArray) {
-  let colorful = 0
-  let dark = 0
-  let visible = 0
-  for (let offset = 0; offset < data.length; offset += 16) {
-    if (data[offset + 3] < 80) continue
-    visible += 1
-    const maximum = Math.max(data[offset], data[offset + 1], data[offset + 2])
-    const minimum = Math.min(data[offset], data[offset + 1], data[offset + 2])
-    if (maximum - minimum > 22 && maximum < 245) colorful += 1
-    const luminance = data[offset] * .299 + data[offset + 1] * .587 + data[offset + 2] * .114
-    if (luminance < 125) dark += 1
-  }
-  return colorful / Math.max(1, visible) < .025 && dark / Math.max(1, visible) < .05
-}
-
-function hasPixelNear(mask: Uint8Array, width: number, height: number, x: number, y: number, radius = 2) {
-  for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
-    for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
-      const px = Math.round(x + offsetX)
-      const py = Math.round(y + offsetY)
-      if (px >= 0 && py >= 0 && px < width && py < height && mask[py * width + px]) return true
+    let denominator = 0
+    for (let classId = 0; classId < MODEL_CLASSES; classId += 1) {
+      denominator += Math.exp(values[classId * planeSize + index] - maximum)
     }
+    classes[index] = bestClass
+    confidence[index] = 1 / denominator
   }
-  return false
-}
 
-function hasQuarterArc(mask: Uint8Array, width: number, height: number, line: PixelLine, candidate: PixelOpening) {
-  const gapStart = line.start + candidate.offsetPx
-  const gapEnd = gapStart + candidate.widthPx
-  if (candidate.widthPx < 4) return false
-  const angles = [15, 25, 35, 45, 55, 65, 75, 85]
-
-  for (const hingeAtEnd of [false, true]) {
-    for (const perpendicularSign of [-1, 1]) {
-      for (const radiusRatio of [.45, .6, .75, .9, 1.05, 1.2, 1.4]) {
-        const radius = candidate.widthPx * radiusRatio
-        let hits = 0
-        for (const degree of angles) {
-          const angle = degree * Math.PI / 180
-          const along = Math.cos(angle) * radius * (hingeAtEnd ? -1 : 1)
-          const perpendicular = Math.sin(angle) * radius * perpendicularSign
-          const hinge = hingeAtEnd ? gapEnd : gapStart
-          const x = line.axis === 'horizontal' ? hinge + along : line.coordinate + perpendicular
-          const y = line.axis === 'horizontal' ? line.coordinate + perpendicular : hinge + along
-          if (hasPixelNear(mask, width, height, x, y, Math.max(1, Math.round(radius * .055)))) hits += 1
+  const visited = new Uint8Array(planeSize)
+  const stack = new Int32Array(planeSize)
+  const components: DetectionComponent[] = []
+  for (let seed = 0; seed < planeSize; seed += 1) {
+    const classId = classes[seed]
+    if (visited[seed] || classId < 3 || classId > 8) continue
+    let stackSize = 1
+    stack[0] = seed
+    visited[seed] = 1
+    let area = 0
+    let confidenceSum = 0
+    let left = MODEL_WIDTH
+    let top = MODEL_HEIGHT
+    let right = 0
+    let bottom = 0
+    while (stackSize) {
+      const index = stack[--stackSize]
+      const x = index % MODEL_WIDTH
+      const y = Math.floor(index / MODEL_WIDTH)
+      area += 1
+      confidenceSum += confidence[index]
+      left = Math.min(left, x)
+      right = Math.max(right, x)
+      top = Math.min(top, y)
+      bottom = Math.max(bottom, y)
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const nextY = y + offsetY
+        if (nextY < 0 || nextY >= MODEL_HEIGHT) continue
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          if (!offsetX && !offsetY) continue
+          const nextX = x + offsetX
+          if (nextX < 0 || nextX >= MODEL_WIDTH) continue
+          const next = nextY * MODEL_WIDTH + nextX
+          if (!visited[next] && classes[next] === classId) {
+            visited[next] = 1
+            stack[stackSize++] = next
+          }
         }
-        if (hits >= 6) return true
       }
     }
-  }
-  return false
-}
-
-function countParallelStrokes(mask: Uint8Array, width: number, height: number, line: PixelLine, candidate: PixelOpening) {
-  const start = Math.round(line.start + candidate.offsetPx + 1)
-  const end = Math.round(start + candidate.widthPx - 2)
-  const radius = Math.max(3, Math.round(line.thickness * 3))
-  const active: number[] = []
-  for (let offset = -radius; offset <= radius; offset += 1) {
-    let hits = 0
-    for (let along = start; along <= end; along += 1) {
-      const x = line.axis === 'horizontal' ? along : line.coordinate + offset
-      const y = line.axis === 'horizontal' ? line.coordinate + offset : along
-      if (x >= 0 && y >= 0 && x < width && y < height) hits += mask[Math.round(y) * width + Math.round(x)]
-    }
-    if (hits / Math.max(1, end - start + 1) >= .42) active.push(offset)
-  }
-  let strokes = 0
-  active.forEach((offset, index) => { if (index === 0 || offset - active[index - 1] > 1) strokes += 1 })
-  return strokes
-}
-
-function sideContentRatio(data: Uint8ClampedArray, width: number, height: number, line: PixelLine, candidate: PixelOpening, side: -1 | 1) {
-  const openingStart = line.start + candidate.offsetPx
-  const depthStart = Math.max(3, line.thickness * 1.5)
-  const depthEnd = Math.max(depthStart + 2, Math.min(30, candidate.widthPx * .42))
-  let content = 0
-  let samples = 0
-  for (let alongFraction = .15; alongFraction <= .85; alongFraction += .1) {
-    for (let depth = depthStart; depth <= depthEnd; depth += 2) {
-      const along = openingStart + candidate.widthPx * alongFraction
-      const x = Math.round(line.axis === 'horizontal' ? along : line.coordinate + depth * side)
-      const y = Math.round(line.axis === 'horizontal' ? line.coordinate + depth * side : along)
-      if (x < 0 || y < 0 || x >= width || y >= height) continue
-      const offset = (y * width + x) * 4
-      const maximum = Math.max(data[offset], data[offset + 1], data[offset + 2])
-      const minimum = Math.min(data[offset], data[offset + 1], data[offset + 2])
-      const luminance = data[offset] * .299 + data[offset + 1] * .587 + data[offset + 2] * .114
-      if (maximum - minimum > 10 || luminance < 238) content += 1
-      samples += 1
+    const averageConfidence = confidenceSum / Math.max(1, area)
+    if (area >= MINIMUM_COMPONENT_AREA && averageConfidence >= CONFIDENCE_THRESHOLD) {
+      components.push({ classId, confidence: averageConfidence, x: left, y: top, width: right - left + 1, height: bottom - top + 1, area })
     }
   }
-  return content / Math.max(1, samples)
+  return components
 }
 
-function classifyOpenings(lines: PixelLine[], symbols: Uint8Array, pixels: Uint8ClampedArray, width: number, height: number, detectionMmPerPixel: number) {
-  for (const line of lines) {
-    for (const candidate of line.openings) {
-      const widthMm = candidate.widthPx * detectionMmPerPixel
-      const hasArc = widthMm <= 1900 && hasQuarterArc(symbols, width, height, line, candidate)
-      const parallelStrokes = countParallelStrokes(symbols, width, height, line, candidate)
-      const firstSide = sideContentRatio(pixels, width, height, line, candidate, -1)
-      const secondSide = sideContentRatio(pixels, width, height, line, candidate, 1)
-      const exposedToBackground = Math.min(firstSide, secondSide) < .14 && Math.max(firstSide, secondSide) > .28
-      // Automatic recognition intentionally emits only ordinary swing doors
-      // and windows. Sliding/balcony doors remain explicit manual tools.
-      if (hasArc) candidate.kind = 'swing'
-      else if (parallelStrokes >= 2 && exposedToBackground) candidate.kind = 'window'
-      else if (!exposedToBackground) candidate.kind = 'swing'
-    }
-  }
+function restoreComponent(component: DetectionComponent, geometry: ReturnType<typeof prepareTensor>['geometry'], image: FloorPlanImage) {
+  const left = Math.max(0, (component.x - geometry.padX) / geometry.scale)
+  const top = Math.max(0, (component.y - geometry.padY) / geometry.scale)
+  const right = Math.min(image.widthPx, (component.x + component.width - geometry.padX) / geometry.scale)
+  const bottom = Math.min(image.heightPx, (component.y + component.height - geometry.padY) / geometry.scale)
+  if (right <= left || bottom <= top) return undefined
+  return { ...component, x: left, y: top, width: right - left, height: bottom - top }
 }
 
-type Run = { coordinate: number; start: number; end: number }
-
-function scanRuns(mask: Uint8Array, width: number, height: number, axis: Axis): Run[] {
-  const majorLength = axis === 'horizontal' ? height : width
-  const minorLength = axis === 'horizontal' ? width : height
-  const minRun = Math.max(10, Math.round(minorLength * 0.04))
-  const runs: Run[] = []
-
-  for (let major = 0; major < majorLength; major += 1) {
-    let start = -1
-    let lastDark = -1
-    for (let minor = 0; minor <= minorLength; minor += 1) {
-      const dark = minor < minorLength && (axis === 'horizontal'
-        ? mask[major * width + minor]
-        : mask[minor * width + major])
-      if (dark) {
-        if (start < 0) start = minor
-        lastDark = minor
-      }
-      const gap = start >= 0 ? minor - lastDark : 0
-      if (start >= 0 && (!dark && (gap > 2 || minor === minorLength))) {
-        const end = lastDark
-        if (end - start + 1 >= minRun) runs.push({ coordinate: major, start, end })
-        start = -1
-        lastDark = -1
-      }
-    }
-  }
-  return runs
-}
-
-function overlapRatio(a: Run, b: Run) {
-  const overlap = Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
-  return overlap / Math.max(1, Math.min(a.end - a.start, b.end - b.start))
-}
-
-function clusterRuns(runs: Run[], axis: Axis, requiredThickness: number): PixelLine[] {
-  const clusters: Run[][] = []
-  for (const run of runs) {
-    const cluster = clusters.find((items) => {
-      const previous = items[items.length - 1]
-      return run.coordinate - previous.coordinate <= 2 && overlapRatio(run, previous) > 0.62
-    })
-    if (cluster) cluster.push(run)
-    else clusters.push([run])
-  }
-
-  return clusters
-    .filter((items) => {
-      const coordinates = new Set(items.map((item) => item.coordinate))
-      return coordinates.size >= requiredThickness
-    })
-    .map((items) => {
-      const starts = items.map((item) => item.start).sort((a, b) => a - b)
-      const ends = items.map((item) => item.end).sort((a, b) => a - b)
-      const coordinates = items.map((item) => item.coordinate).sort((a, b) => a - b)
-      return {
-        axis,
-        coordinate: coordinates[Math.floor(coordinates.length / 2)],
-        start: starts[Math.floor(starts.length / 2)],
-        end: ends[Math.floor(ends.length / 2)],
-        thickness: coordinates[coordinates.length - 1] - coordinates[0] + 1,
-        openings: [],
-      }
-    })
-}
-
-function median(values: number[]) {
-  const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.floor(sorted.length / 2)] ?? 1
-}
-
-function filterStructuralLines(lines: PixelLine[], minimumDimension: number) {
-  const minimumThinLength = Math.max(14, minimumDimension * .24)
-  return lines.filter((line) => {
-    const length = line.end - line.start
-    if (line.thickness >= 2 && length >= Math.max(8, minimumDimension * .055)) return true
-    if (length >= minimumThinLength) return true
-    return lines.some((other) => other !== line
-      && other.axis === line.axis
-      && Math.abs(other.coordinate - line.coordinate) >= 2
-      && Math.abs(other.coordinate - line.coordinate) <= Math.max(8, minimumDimension * .05)
-      && overlapRatio(line, other) > .68
-      && other.end - other.start >= minimumDimension * .18)
+function wallSegments(walls: Wall[]): WallSegment[] {
+  return walls.flatMap((wall) => {
+    const horizontal = Math.abs(wall.end.x - wall.start.x) >= Math.abs(wall.end.y - wall.start.y)
+    return [{
+      wall,
+      axis: horizontal ? 'horizontal' as const : 'vertical' as const,
+      coordinate: horizontal ? (wall.start.y + wall.end.y) / 2 : (wall.start.x + wall.end.x) / 2,
+      start: horizontal ? Math.min(wall.start.x, wall.end.x) : Math.min(wall.start.y, wall.end.y),
+      end: horizontal ? Math.max(wall.start.x, wall.end.x) : Math.max(wall.start.y, wall.end.y),
+    }]
   })
 }
 
-function estimateDetectionScale(lines: PixelLine[]) {
-  const typicalThickness = Math.max(1, median(lines.map((line) => line.thickness).filter((value) => value <= 32)))
-  return Math.max(.5, Math.min(200, 160 / typicalThickness))
+function distanceToSegment(x: number, y: number, line: WallSegment) {
+  if (line.axis === 'horizontal') {
+    const along = Math.min(Math.max(x, line.start), line.end)
+    return Math.hypot(x - along, y - line.coordinate)
+  }
+  const along = Math.min(Math.max(y, line.start), line.end)
+  return Math.hypot(x - line.coordinate, y - along)
 }
 
-function mergeCollinear(lines: PixelLine[], detectionMmPerPixel: number): PixelLine[] {
-  const typicalThickness = Math.max(1, median(lines.map((line) => line.thickness)))
-  const coordinateTolerance = Math.max(2, Math.min(7, Math.round(typicalThickness * .7)))
-  const minOpeningPx = Math.max(4, 480 / detectionMmPerPixel)
-  const maxOpeningPx = Math.max(minOpeningPx + 2, 2400 / detectionMmPerPixel)
-  const groups: PixelLine[][] = []
+function perpendicularDistance(x: number, y: number, line: WallSegment) {
+  return line.axis === 'horizontal' ? Math.abs(y - line.coordinate) : Math.abs(x - line.coordinate)
+}
 
-  for (const line of [...lines].sort((a, b) => a.coordinate - b.coordinate || a.start - b.start)) {
-    const group = groups.find((items) => items[0].axis === line.axis && Math.abs(items[0].coordinate - line.coordinate) <= coordinateTolerance)
-    if (group) group.push(line)
-    else groups.push([line])
+function nearestWall(component: DetectionComponent, lines: WallSegment[], calibration: ScaleCalibration, group: 'door' | 'window') {
+  const centerX = (component.x + component.width / 2) * calibration.mmPerPixel
+  const centerY = (component.y + component.height / 2) * calibration.mmPerPixel
+  if (group === 'window') {
+    const expectedAxis: Axis = component.width >= component.height ? 'horizontal' : 'vertical'
+    const sameAxis = lines.filter((line) => line.axis === expectedAxis)
+    const candidates = sameAxis.length ? sameAxis : lines
+    const line = candidates.reduce((best, candidate) => perpendicularDistance(centerX, centerY, candidate) < perpendicularDistance(centerX, centerY, best) ? candidate : best)
+    return { line, distance: perpendicularDistance(centerX, centerY, line), centerX, centerY }
   }
+  const line = lines.reduce((best, candidate) => distanceToSegment(centerX, centerY, candidate) < distanceToSegment(centerX, centerY, best) ? candidate : best)
+  return { line, distance: distanceToSegment(centerX, centerY, line), centerX, centerY }
+}
 
-  const merged: PixelLine[] = []
-  for (const group of groups) {
-    const sorted = group.sort((a, b) => a.start - b.start)
-    let current = { ...sorted[0], openings: [...sorted[0].openings] }
-    for (const next of sorted.slice(1)) {
-      const gap = next.start - current.end
-      if (gap <= 4) {
-        current.end = Math.max(current.end, next.end)
-        current.thickness = Math.max(current.thickness, next.thickness)
-      } else if (gap >= minOpeningPx && gap <= maxOpeningPx) {
-        current.openings.push({ offsetPx: current.end - current.start, widthPx: gap })
-        current.end = next.end
-        current.thickness = Math.max(current.thickness, next.thickness)
-      } else {
-        merged.push(current)
-        current = { ...next, openings: [...next.openings] }
+function wallCorners(lines: WallSegment[]) {
+  const corners: { x: number; y: number }[] = []
+  const horizontal = lines.filter((line) => line.axis === 'horizontal')
+  const vertical = lines.filter((line) => line.axis === 'vertical')
+  for (const first of horizontal) {
+    for (const second of vertical) {
+      if (first.start <= second.coordinate && second.coordinate <= first.end && second.start <= first.coordinate && first.coordinate <= second.end) {
+        corners.push({ x: second.coordinate, y: first.coordinate })
       }
     }
-    merged.push(current)
   }
-  return merged
+  return corners
 }
 
-function removeDuplicates(lines: PixelLine[], detectionMmPerPixel: number) {
-  const minimumLength = Math.max(5, 500 / detectionMmPerPixel)
-  const sorted = lines
-    .filter((line) => line.end - line.start >= minimumLength)
-    .sort((a, b) => (b.end - b.start) - (a.end - a.start))
-  const kept: PixelLine[] = []
+function overlapsExisting(candidate: Opening, openings: Opening[]) {
+  return openings.some((opening) => opening.wallId === candidate.wallId
+    && Math.max(opening.offsetMm, candidate.offsetMm) < Math.min(opening.offsetMm + opening.widthMm, candidate.offsetMm + candidate.widthMm))
+}
 
-  for (const line of sorted) {
-    const duplicate = kept.some((other) =>
-      line.axis === other.axis
-      && Math.abs(line.coordinate - other.coordinate) <= Math.max(2, Math.min(line.thickness, other.thickness) / 2)
-      && Math.abs(line.start - other.start) < 8
-      && Math.abs(line.end - other.end) < 8)
-    if (!duplicate) kept.push(line)
+function attachOpenings(components: DetectionComponent[], walls: Wall[], image: FloorPlanImage, calibration: ScaleCalibration) {
+  const lines = wallSegments(walls)
+  if (!lines.length) return []
+  const bounds = {
+    left: Math.min(...walls.flatMap((wall) => [wall.start.x, wall.end.x])),
+    top: Math.min(...walls.flatMap((wall) => [wall.start.y, wall.end.y])),
+    right: Math.max(...walls.flatMap((wall) => [wall.start.x, wall.end.x])),
+    bottom: Math.max(...walls.flatMap((wall) => [wall.start.y, wall.end.y])),
   }
-  return kept.slice(0, 80)
+  const corners = wallCorners(lines)
+  const minimumImageDimension = Math.min(image.widthPx, image.heightPx)
+  const snapDistance = Math.max(10, minimumImageDimension * .045) * calibration.mmPerPixel
+  const boundsMargin = Math.max(5, minimumImageDimension * .025) * calibration.mmPerPixel
+  const minimumWindowLength = Math.max(12, (bounds.right - bounds.left) / calibration.mmPerPixel * .045) * calibration.mmPerPixel
+  const cornerMargin = Math.max(10 * calibration.mmPerPixel, minimumWindowLength * .4)
+  const accepted: Opening[] = []
+
+  for (const component of [...components].sort((a, b) => b.confidence - a.confidence)) {
+    const metadata = classMetadata[component.classId]
+    if (!metadata) continue
+    const nearest = nearestWall(component, lines, calibration, metadata.group)
+    const insideBounds = nearest.centerX >= bounds.left - boundsMargin && nearest.centerX <= bounds.right + boundsMargin
+      && nearest.centerY >= bounds.top - boundsMargin && nearest.centerY <= bounds.bottom + boundsMargin
+    const lengthMm = Math.max(component.width, component.height) * calibration.mmPerPixel
+    if (!insideBounds && component.confidence < .75) continue
+    if (metadata.group === 'window' && lengthMm < minimumWindowLength && component.confidence < .75) continue
+    if (nearest.distance > snapDistance && component.confidence < .75) continue
+    if (metadata.group === 'window' && component.confidence < .85
+      && corners.some((corner) => Math.hypot(nearest.centerX - corner.x, nearest.centerY - corner.y) < cornerMargin)) continue
+
+    const wallLength = nearest.line.end - nearest.line.start
+    const alongCenter = nearest.line.axis === 'horizontal' ? nearest.centerX : nearest.centerY
+    const widthMm = Math.min(wallLength, Math.max(300, lengthMm))
+    const offsetMm = Math.max(0, Math.min(wallLength - widthMm, alongCenter - nearest.line.start - widthMm / 2))
+    const opening: Opening = {
+      id: nanoid(),
+      wallId: nearest.line.wall.id,
+      detected: true,
+      detectedClass: metadata.name,
+      confidence: component.confidence,
+      type: metadata.group === 'window' ? 'window' : 'door',
+      doorKind: metadata.doorKind,
+      offsetMm,
+      widthMm,
+      heightMm: metadata.group === 'window' ? 1200 : 2100,
+      sillHeightMm: metadata.group === 'window' ? 900 : 0,
+    }
+    if (!overlapsExisting(opening, accepted)) accepted.push(opening)
+  }
+  return accepted
 }
 
 export async function detectFloorPlan(imageData: FloorPlanImage, calibration: ScaleCalibration): Promise<DetectionResult> {
+  const heuristic = await detectFloorPlanHeuristic(imageData, calibration)
+  if (!heuristic.walls.length) return { ...heuristic, openings: [] }
   const image = await loadImage(imageData.dataUrl)
-  // Recognition runs on a normalized analysis canvas. This preserves thin
-  // one-pixel walls and door arcs in thumbnails without changing the uploaded
-  // image or the user's calibration coordinate system.
-  const analysisScale = Math.max(1, Math.min(3, 320 / Math.min(imageData.widthPx, imageData.heightPx)))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(imageData.widthPx * analysisScale)
-  canvas.height = Math.round(imageData.heightPx * analysisScale)
-  const context = canvas.getContext('2d', { willReadFrequently: true })
-  if (!context) throw new Error('이미지 분석을 시작할 수 없어요.')
-  context.drawImage(image, 0, 0, canvas.width, canvas.height)
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
-  const lineDrawing = isLineDrawing(pixels.data)
-  const initialMask = luminanceMask(pixels.data, canvas.width, canvas.height, lineDrawing ? 205 : 125)
-  const bounds = findDrawingBounds(initialMask, canvas.width, canvas.height)
-  const mask = restrictToBounds(initialMask, canvas.width, canvas.height, bounds)
-  const symbols = edgeMask(pixels.data, canvas.width, canvas.height, bounds)
-  const raw = filterStructuralLines([
-    ...clusterRuns(scanRuns(mask, canvas.width, canvas.height, 'horizontal'), 'horizontal', 1),
-    ...clusterRuns(scanRuns(mask, canvas.width, canvas.height, 'vertical'), 'vertical', 1),
-  ], Math.min(bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1))
-  const detectionMmPerPixel = estimateDetectionScale(raw)
-  const lines = removeDuplicates(mergeCollinear(raw, detectionMmPerPixel), detectionMmPerPixel)
-  classifyOpenings(lines, symbols, pixels.data, canvas.width, canvas.height, detectionMmPerPixel)
-  const walls: Wall[] = []
-  const openings: Opening[] = []
-
-  for (const line of lines) {
-    const wallId = nanoid()
-    const startPx = line.axis === 'horizontal'
-      ? { x: line.start, y: line.coordinate }
-      : { x: line.coordinate, y: line.start }
-    const endPx = line.axis === 'horizontal'
-      ? { x: line.end, y: line.coordinate }
-      : { x: line.coordinate, y: line.end }
-    walls.push({
-      id: wallId,
-      start: { x: startPx.x / analysisScale * calibration.mmPerPixel, y: startPx.y / analysisScale * calibration.mmPerPixel },
-      end: { x: endPx.x / analysisScale * calibration.mmPerPixel, y: endPx.y / analysisScale * calibration.mmPerPixel },
-      thicknessMm: Math.max(100, Math.min(300, line.thickness / analysisScale * calibration.mmPerPixel)),
-      heightMm: 2400,
-    })
-    for (const candidate of line.openings) {
-      if (!candidate.kind) continue
-      const widthMm = candidate.widthPx / analysisScale * calibration.mmPerPixel
-      openings.push({
-        id: nanoid(),
-        wallId,
-        detected: true,
-        type: candidate.kind === 'window' ? 'window' : 'door',
-        doorKind: candidate.kind === 'swing' ? 'swing' : undefined,
-        offsetMm: candidate.offsetPx / analysisScale * calibration.mmPerPixel,
-        widthMm,
-        heightMm: candidate.kind === 'window' ? 1200 : 2100,
-        sillHeightMm: candidate.kind === 'window' ? 900 : 0,
-      })
-    }
-  }
-
+  const prepared = prepareTensor(image)
+  const session = await getSession()
+  const outputs = await session.run({ image: prepared.tensor })
+  const logits = outputs.logits
+  if (!logits) throw new Error('AI 모델 출력이 없습니다.')
+  const restored = decodeSegmentation(logits)
+    .map((component) => restoreComponent(component, prepared.geometry, imageData))
+    .filter((component): component is DetectionComponent => Boolean(component))
+  const openings = attachOpenings(restored, heuristic.walls, imageData, calibration)
   return {
-    walls,
+    walls: heuristic.walls,
     openings,
     summary: {
-      wallCount: walls.length,
+      wallCount: heuristic.walls.length,
       doorCount: openings.filter((opening) => opening.type === 'door').length,
       windowCount: openings.filter((opening) => opening.type === 'window').length,
     },
