@@ -159,7 +159,6 @@ export default function App() {
         <div className="workspace-heading">
           <div><span>{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.body}</p></div>
           <div className="workspace-heading-tools">
-            {step === 'walls' && <div className="wall-count"><b>{project.walls.length}</b><span>벽 · 개구부 {project.openings.length}</span></div>}
             {stepNavigation && <div className="step-navigation" aria-label="단계 이동">
               <button className="previous" onClick={() => setActiveStep(stepNavigation.previous)}><ChevronLeft size={16} /> 이전</button>
               <button className="next" disabled={stepNavigation.nextDisabled} onClick={() => setActiveStep(stepNavigation.next)}>다음 <ChevronRight size={16} /></button>
@@ -225,6 +224,7 @@ export default function App() {
           <button className="danger-tool" onClick={() => project.walls.length && window.confirm('그린 벽을 모두 지울까요?') && clearWalls()} disabled={!project.walls.length}><Trash2 size={18} /><span>전체 삭제</span></button>
           <button className="undo-tool" onClick={undoLastUserAction} disabled={!canUndoWallAction}><Undo2 size={19} /><span>한 단계 취소</span></button>
           <button className="detect-tool" onClick={() => void autoDetect()} disabled={detecting}><ScanLine size={19} /><span>{detecting ? '인식 중…' : '자동 인식'}</span></button>
+          <div className="wall-result" aria-label={`벽 ${project.walls.length}개, 개구부 ${project.openings.length}개`}><b>{project.walls.length}</b><span>벽 {project.walls.length} · 개구부 {project.openings.length}</span></div>
           <div className="wall-tip"><span className="tip-dot" /><p><b>새 벽 그리기</b><br />두 점 선택 후 생성</p></div>
         </aside>
       )}

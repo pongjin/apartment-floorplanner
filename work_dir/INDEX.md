@@ -6,6 +6,7 @@
 
 | 날짜 | 커밋 또는 연결 방식 | 작업 | 기록 |
 | --- | --- | --- | --- |
+| 2026-09-01 | 이 기록을 포함하는 커밋 | 모바일 도면 제어 배치 보정 | [2026-09-01-mobile-controls-layout.md](2026-09-01-mobile-controls-layout.md) |
 | 2026-09-01 | 이 기록을 포함하는 커밋 | 도면 편집·가구 조작 UX 개선 | [2026-09-01-floorplan-furniture-ux.md](2026-09-01-floorplan-furniture-ux.md) |
 | 2026-08-31 | 이 기록을 포함하는 커밋 | 하이브리드 AI 평면도 자동 인식 적용 | [2026-08-31-hybrid-floorplan-recognition.md](2026-08-31-hybrid-floorplan-recognition.md) |
 | 2026-08-30 | 이 기록을 포함하는 커밋 | Windows FP/STR 학습·검증 실행서 작성 | [2026-08-30-windows-str-training-runbook.md](2026-08-30-windows-str-training-runbook.md) |
